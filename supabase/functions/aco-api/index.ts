@@ -1,3 +1,14 @@
+// src/availability-model.ts
+function availabilityRanges(hours) {
+  const ranges = [];
+  for (const hour2 of [...new Set(hours)].sort((a, b) => a - b)) {
+    const last = ranges.at(-1);
+    if (last && last.to === hour2) last.to = hour2 + 1;
+    else ranges.push({ from: hour2, to: hour2 + 1 });
+  }
+  return ranges;
+}
+
 // src/domain.ts
 var defaultRules = { renewalDays: 7, cycleWeeks: 4, validWeeks: 6, coachHoldHours: 48, checkoutMinutes: 15, protectionDays: 1, consultationDays: 7, startDays: 14, substituteHours: 48, freezeDays: 7 };
 var rules = (db) => Object.fromEntries(Object.entries(defaultRules).map(([key, value]) => [key, db.settings.rules?.[key] ?? value]));
@@ -92,6 +103,7 @@ function execute(source, a, cmd) {
       if (cmd.days.some((d) => !Number.isInteger(d) || d < 0 || d > 6) || cmd.hours.some((h) => !Number.isInteger(h) || h < 0 || h > 23)) throw Error("Wybierz dni i godziny pracy.");
       const weekly = cmd.weeklyHours || Object.fromEntries(cmd.days.map((d) => [d, cmd.hours]));
       if (Object.entries(weekly).some(([d, hs]) => !Number.isInteger(Number(d)) || Number(d) < 0 || Number(d) > 6 || !Array.isArray(hs) || hs.some((h) => !Number.isInteger(h) || h < 0 || h > 23))) throw Error("Niepoprawny zakres godzin.");
+      if (Object.values(weekly).some((hs) => availabilityRanges(hs).length > 3)) throw Error("W jednym dniu mo\u017Cna ustawi\u0107 maksymalnie 3 zakresy godzin.");
       const fits = (date2, hour2) => (weekly[dayIndex(date2)] || []).includes(hour2);
       if (db.sessions.some((s) => s.trainerId === t.id && s.status === "scheduled" && at(s.date, s.hour) > now && (!fits(s.date, s.hour) || s.kind === "consultation" && !fits(s.date, s.hour + 1))) || db.holds.some((h) => h.trainerId === t.id && h.status === "active" && h.expires > db.now && h.dates.some((d) => !fits(d.date, d.hour)))) throw Error("Zmiana koliduje z zaplanowan\u0105 wizyt\u0105 lub rezerwacj\u0105. Najpierw zmie\u0144 jej termin.");
       t.weeklyHours = structuredClone(weekly);
