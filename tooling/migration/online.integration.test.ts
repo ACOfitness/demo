@@ -10,6 +10,9 @@ const pg=new PGlite();after(()=>pg.close());
 const id=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 await pg.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;create table auth.users(id uuid primary key);create table auth.sessions(id uuid primary key,user_id uuid references auth.users(id),not_after timestamptz);create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;grant usage on schema auth to authenticated,anon;grant execute on function auth.uid() to authenticated,anon;`);
 for(const name of (await readdir(new URL('../../supabase/migrations/',import.meta.url))).filter(n=>n.endsWith('.sql')).sort())await pg.exec(await readFile(new URL('../../supabase/migrations/'+name,import.meta.url),'utf8'));
+// Match hosted Supabase: backend can inspect Auth sessions, never delete them.
+await pg.exec('revoke delete on auth.sessions from service_role');
+const sessionIds=new Map<number,string>();
 const source=await initialDatabase();source.accounts=[{id:id(1),email:'one@example.test',role:'client',clientId:id(1)},{id:id(2),email:'two@example.test',role:'client',clientId:id(2)},{id:id(3),email:'trainer@example.test',role:'trainer',trainerId:id(3)},{id:id(4),email:'admin@example.test',role:'admin'}];
 source.trainers=[{id:id(3),name:'Trainer',rate:50,days:[0,1,2,3,4,5,6],hours:[10,11,12],products:['personal'],pesel:'12345678901'}];
 source.clients=source.accounts.slice(0,2).map(a=>({id:a.id,email:a.email,name:a.id,phone:'123',birthDate:'1990-01-01',trainerId:id(3),service:'personal',intensity:1,active:true,invited:true,prescribed:true,answers:['PRIVATE HEALTH']}));
@@ -43,7 +46,7 @@ const fetcher:typeof fetch=async(input,init)=>{
  try{const result=await pg.query<{value:unknown}>(`select public.${name}(${keys.map((k,i)=>`${k} => $${i+1}`).join(',')}) value`,Object.entries(values).map(([k,v])=>['p_clients','p_trainers'].includes(k)?v:v&&typeof v==='object'?JSON.stringify(v):v));return Response.json(result.rows[0].value)}catch(error){return Response.json({code:(error as {code:string}).code,message:(error as Error).message},{status:400})}
 };
 const handle=createHandler({url:'https://project.supabase.co',serviceKey:'server-secret',origins:['https://acofitness.github.io']},fetcher);
-const request=(account:number,body:unknown)=>new Request('https://project.supabase.co/functions/v1/aco-api',{method:'POST',headers:{Origin:'https://acofitness.github.io',Authorization:'Bearer header.'+Buffer.from(JSON.stringify({sub:id(account),session_id:id(account+100)})).toString('base64url')+'.signature'},body:JSON.stringify(body)});
+const request=(account:number,body:unknown)=>new Request('https://project.supabase.co/functions/v1/aco-api',{method:'POST',headers:{Origin:'https://acofitness.github.io',Authorization:'Bearer header.'+Buffer.from(JSON.stringify({sub:id(account),session_id:sessionIds.get(account)||id(account+100)})).toString('base64url')+'.signature'},body:JSON.stringify(body)});
 let successBody:any,successActor:number;
 test('two clients cannot reserve the same package slots concurrently',async()=>{
  const start=dayAdd(dateOf(new Date()),1),slots=[{day:dayIndex(start),hour:10}],dates=[0,1,2,3].map(w=>({date:dayAdd(start,w*7),hour:10}));
@@ -87,7 +90,7 @@ test('direct activation verifies approval, never emails and cannot overwrite cre
  assert.equal(passwordWrites,1);
  assert.equal((await call('1990-01-01','Another-password-456!')).status,422);assert.equal(passwordWrites,1);
  const activated=await call('1990-01-01','A-new-password-123!');assert.equal(activated.status,200,JSON.stringify(await activated.json()));assert.equal(passwordWrites,1);
- await pg.exec('reset role');await pg.query('insert into auth.sessions values($1,$2,null)',[id(600),id(500)]);await pg.exec('set role service_role');
+ await pg.exec('reset role');await pg.query('insert into auth.sessions values($1,$2,null)',[id(1600),id(500)]);await pg.exec('set role service_role');sessionIds.set(500,id(1600));
  const state=await handle(request(500,{action:'state'}));assert.equal(state.status,200);const data=await state.json();assert.equal(data.db.clients[0].active,true);assert.deepEqual(data.db.messages.map((m:any)=>m.title),['Witamy w ACO!']);
  await pg.query('delete from aco_private.request_limits');
  assert.equal((await call('1990-01-01','Overwrite-password-789!')).status,422);assert.equal(passwordWrites,1);
@@ -98,7 +101,7 @@ test('activation claims serialize concurrent requests and are not callable by br
  const claim=()=>pg.query<any>('select public.aco_claim_activation($1,$2,$3) result',['one@example.test','1990-01-01',crypto.randomUUID()]);
  const result=await Promise.all([claim(),claim()]);assert.equal(result.filter(r=>r.rows[0].result.fresh).length,1);assert.equal(result[0].rows[0].result.requestId,result[1].rows[0].result.requestId);
  for(const role of ['anon','authenticated']){await pg.exec('reset role;set role '+role);await assert.rejects(claim(),/permission denied/);await assert.rejects(pg.query('select * from aco_private.direct_activations'),/permission denied/)}
- await pg.exec('reset role;set role service_role');await pg.query("update public.aco_clients set status='active' where id=$1",[id(1)]);await pg.exec('reset role');await pg.query('insert into auth.sessions values($1,$2,null)',[id(101),id(1)]);await pg.exec('set role service_role');
+ await pg.exec('reset role;set role service_role');await pg.query("update public.aco_clients set status='active' where id=$1",[id(1)]);await pg.exec('reset role');await pg.query('insert into auth.sessions values($1,$2,null)',[id(1101),id(1)]);await pg.exec('set role service_role');sessionIds.set(1,id(1101));
 });
 test('administrator password reset revokes already-issued sessions',async()=>{
  const result=await handle(request(4,{action:'resetPassword',requestId:id(804),accountId:id(3)}));assert.equal(result.status,200,JSON.stringify(await result.clone().json()));const body=await result.json();assert.ok(body.temporary.length>=20);
@@ -112,4 +115,22 @@ test('locations are typed, admin-only, persisted and inaccessible through direct
  assert.equal((await pg.query<any>('select name from public.aco_locations where id=$1',[location])).rows[0].name,'Studio testowe');
  const session=(await pg.query<any>('select id from public.aco_sessions limit 1')).rows[0].id;const changed=await handle(request(4,{action:'command',requestId:id(953),command:{type:'sessionLocation',id:session,locationId:location}}));assert.equal(changed.status,200);assert.equal((await pg.query<any>('select location_id from public.aco_sessions where id=$1',[session])).rows[0].location_id,location);
  const security=await pg.query<any>("select relrowsecurity, has_table_privilege('authenticated','public.aco_locations','SELECT') browser_read from pg_class where oid='public.aco_locations'::regclass");assert.equal(security.rows[0].relrowsecurity,true);assert.equal(security.rows[0].browser_read,false);
+});
+
+test('revocation rejects old sessions for reads and writes without Auth DELETE permission',async()=>{
+ assert.equal((await pg.query<any>("select has_table_privilege('service_role','auth.sessions','DELETE') allowed")).rows[0].allowed,false);
+ assert.equal((await pg.query<any>('select count(*)::int n from auth.sessions where id=$1',[id(103)])).rows[0].n,1);
+ await assert.rejects(pg.query('select aco_private.relational_session($1,$2)',[id(3),id(103)]),/Session revoked/);
+ await assert.rejects(pg.query('select aco_private.check_runtime_session($1,$2)',[id(3),id(103)]),/Session revoked/);
+ assert.equal((await handle(request(3,{action:'command',requestId:id(1999),command:{type:'updateProfile',name:'Blocked'}}))).status,403);
+ // Repeated revocation is idempotent; a genuinely new login is still permitted.
+ await pg.query('select public.aco_revoke_sessions($1)',[id(3)]);
+ await pg.exec('reset role');await pg.query('insert into auth.sessions values($1,$2,null)',[id(1103),id(3)]);await pg.exec('set role service_role');
+ assert.equal((await pg.query<any>('select aco_private.relational_session($1,$2) role',[id(3),id(1103)])).rows[0].role,'trainer');
+ for(const role of ['anon','authenticated']){
+ await pg.exec('reset role;set role '+role);
+ await assert.rejects(pg.query('select * from aco_private.revoked_sessions'),/permission denied/);
+ await assert.rejects(pg.query('select public.aco_revoke_sessions($1)',[id(4)]),/permission denied/);
+ }
+ await pg.exec('reset role;set role service_role');
 });
