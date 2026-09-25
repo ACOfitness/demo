@@ -19,6 +19,7 @@ const rules=object(Object.fromEntries(Object.keys(defaultRules).map(k=>[k,number
 const prices=object({'1':number(.01,1000000),'2':number(.01,1000000),'3':number(.01,1000000)});
 const photo:Check=v=>typeof v==='string'&&(v===''||v.length<=2900000&&/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v));
 const fields:Record<string,Record<string,Check>>={
+ saveLocation:{id,name:text(200,1),address:text(500)},sessionLocation:{id,locationId:id},
  updateProfile:{name:text(200,1),email:text(254,3),phone:text(40),photo},
  availability:{trainerId:id,days:array(day,7),hours:array(hour,24),weeklyHours:optional(object(Object.fromEntries(Array.from({length:7},(_,i)=>[String(i),optional(array(hour,24))]))))},
  requestPayment:{id,code:optional(text(100))},confirmConsultation:{id},

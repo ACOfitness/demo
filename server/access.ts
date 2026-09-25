@@ -44,7 +44,7 @@ export function projectState(source:Database,userId:string):Database {
  ...(own?{productRates:structuredClone(t.productRates),productRateHistory:structuredClone(t.productRateHistory),rates:structuredClone(t.rates),phone:t.phone,pesel:t.pesel,student:t.student,address:t.address,taxOffice:t.taxOffice}:{})};
  }),
  sessions:sessions.map(s=>({id:s.id,clientId:s.clientId,trainerId:s.trainerId,packageId:s.packageId,date:s.date,hour:s.hour,kind:s.kind,status:s.status,
- consultationPrice:s.consultationPrice,publicNote:s.publicNote,privateNote:me.role==='client'?'':s.privateNote,
+ locationId:s.locationId,consultationPrice:s.consultationPrice,publicNote:s.publicNote,privateNote:me.role==='client'?'':s.privateNote,
  comments:s.comments.map(c=>({id:c.id,author:c.author,text:c.text,at:c.at})),original:s.original,substituteId:s.substituteId,
  ...(admin||s.trainerId===me.trainerId?{rate:s.rate,earned:s.earned}:{})})),
  packages:source.packages.filter(p=>managed.has(p.clientId)).map(p=>structuredClone(p)),
@@ -54,7 +54,7 @@ export function projectState(source:Database,userId:string):Database {
  blocks:occupiedSlots(source,new Set(sessions.map(s=>s.id)),new Set(source.holds.filter(h=>managed.has(h.clientId)).map(h=>h.id)),managed),
  messages:source.messages.filter(m=>notifications(source,actor).some(n=>n.id===m.id)).map(m=>structuredClone(m)),
  letters:letters.map(m=>structuredClone(m)),noticeReads:{[me.id]:[...(source.noticeReads?.[me.id]||[])]},
- audit:admin?structuredClone(source.audit):[],settings:structuredClone(source.settings),
+ locations:structuredClone(source.locations),audit:admin?structuredClone(source.audit):[],settings:structuredClone(source.settings),
  productCopies:structuredClone(source.productCopies),
  promotions:source.promotions?.filter(p=>admin||me.role==='client'&&p.kind==='email'&&p.value===me.email.toLowerCase()).map(p=>structuredClone(p)),
  extraHours:source.extraHours?.filter(h=>admin||h.trainerId===me.trainerId).map(h=>structuredClone(h))
@@ -68,7 +68,7 @@ export function projectState(source:Database,userId:string):Database {
 export function publicState(source:Database):Database {
  return {version:1,now:source.now,accounts:[],clients:[],sessions:[],packages:[],holds:[],messages:[],sales:[],substitutions:[],audit:[],letters:[],
  trainers:source.trainers.filter(t=>!t.deleted).map(t=>({id:t.id,name:t.name,photo:t.photo,products:t.products,days:[...t.days],hours:[...t.hours],weeklyHours:structuredClone(t.weeklyHours),rate:0})),
- settings:structuredClone(source.settings),productCopies:structuredClone(source.productCopies),blocks:occupiedSlots(source,new Set())};
+ locations:structuredClone(source.locations),settings:structuredClone(source.settings),productCopies:structuredClone(source.productCopies),blocks:occupiedSlots(source,new Set())};
 }
 function occupiedSlots(source:Database,visibleSessions:Set<string>,visibleHolds=new Set<string>(),visibleClients=new Set<string>()){
  const out=source.blocks.map(b=>({...b}));
