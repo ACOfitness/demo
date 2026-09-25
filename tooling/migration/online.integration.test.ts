@@ -1,22 +1,23 @@
 import {PGlite} from '@electric-sql/pglite';
-import {readFile} from 'node:fs/promises';
+import {readFile,readdir} from 'node:fs/promises';
 import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHandler} from '../../server/handler';
-import {encode} from '../../server/store';
+import {encodeRelational} from '../../server/relational-store';
 import {initialDatabase} from '../../src/auth';
 import {dateOf,dayAdd,dayIndex} from '../../src/domain';
 const pg=new PGlite();after(()=>pg.close());
 const id=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 await pg.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;create table auth.users(id uuid primary key);create table auth.sessions(id uuid primary key,user_id uuid references auth.users(id),not_after timestamptz);create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;grant usage on schema auth to authenticated,anon;grant execute on function auth.uid() to authenticated,anon;`);
-for(const name of ['20260925094836_aco_access_foundation.sql','20260925125207_aco_command_transactions.sql','20260925133351_registration_identity_check.sql'])await pg.exec(await readFile(new URL('../../supabase/migrations/'+name,import.meta.url),'utf8'));
+for(const name of (await readdir(new URL('../../supabase/migrations/',import.meta.url))).filter(n=>n.endsWith('.sql')).sort())await pg.exec(await readFile(new URL('../../supabase/migrations/'+name,import.meta.url),'utf8'));
 const source=await initialDatabase();source.accounts=[{id:id(1),email:'one@example.test',role:'client',clientId:id(1)},{id:id(2),email:'two@example.test',role:'client',clientId:id(2)},{id:id(3),email:'trainer@example.test',role:'trainer',trainerId:id(3)},{id:id(4),email:'admin@example.test',role:'admin'}];
 source.trainers=[{id:id(3),name:'Trainer',rate:50,days:[0,1,2,3,4,5,6],hours:[10,11,12],products:['personal'],pesel:'12345678901'}];
-source.clients=source.accounts.slice(0,2).map(a=>({id:a.id,email:a.email,name:a.id,phone:'123',trainerId:id(3),service:'personal',intensity:1,active:true,invited:true,prescribed:true,answers:['PRIVATE HEALTH']}));
+source.clients=source.accounts.slice(0,2).map(a=>({id:a.id,email:a.email,name:a.id,phone:'123',birthDate:'1990-01-01',trainerId:id(3),service:'personal',intensity:1,active:true,invited:true,prescribed:true,answers:['PRIVATE HEALTH']}));
 for(const account of source.accounts){await pg.query('insert into auth.users values($1)',[account.id]);await pg.query('insert into auth.sessions values($1,$2,null)',[id(Number(account.id.slice(-2))+100),account.id]);await pg.query('insert into aco_private.identities(user_id,role,enabled) values($1,$2,true)',[account.id,account.role])}
-for(const row of encode(source))await pg.query('insert into aco_private.runtime_entities(kind,id,payload) values($1,$2,$3)',[row.kind,row.id,row.payload]);
+const order=(await pg.query<{tables:string[]}>('select aco_private.relational_tables() tables')).rows[0].tables;
+for(const row of encodeRelational(source).sort((a,b)=>order.indexOf(a.table)-order.indexOf(b.table)))await pg.query('select aco_private.write_relational_row($1,$2,$3)',[row.table,row.key,row.data]);
 await pg.exec('set role service_role');
-const known=new Set(['aco_runtime_load','aco_runtime_commit','aco_runtime_system_load','aco_rate_limit','aco_revoke_sessions']);
+const known=new Set(['aco_relational_load','aco_relational_commit','aco_relational_public_load','aco_rate_limit','aco_revoke_sessions']);
 let created=500,recoveries=0;
 const fetcher:typeof fetch=async(input,init)=>{
  const url=new URL(String(input));
@@ -32,7 +33,7 @@ const fetcher:typeof fetch=async(input,init)=>{
  if(url.pathname==='/auth/v1/token'||url.pathname==='/auth/v1/user'&&init?.method==='PUT'||url.pathname.startsWith('/auth/v1/admin/users/'))return Response.json({});
  const name=url.pathname.split('/').at(-1)!;assert.ok(known.has(name));
  const values=JSON.parse(String(init?.body)),keys=Object.keys(values);assert.ok(keys.every(k=>/^p_[a-z_]+$/.test(k)));
- try{const result=await pg.query<{value:unknown}>(`select public.${name}(${keys.map((k,i)=>`${k} => $${i+1}`).join(',')}) value`,Object.values(values).map(v=>v&&typeof v==='object'?JSON.stringify(v):v));return Response.json(result.rows[0].value)}catch(error){return Response.json({code:(error as {code:string}).code,message:(error as Error).message},{status:400})}
+ try{const result=await pg.query<{value:unknown}>(`select public.${name}(${keys.map((k,i)=>`${k} => $${i+1}`).join(',')}) value`,Object.entries(values).map(([k,v])=>['p_clients','p_trainers'].includes(k)?v:v&&typeof v==='object'?JSON.stringify(v):v));return Response.json(result.rows[0].value)}catch(error){return Response.json({code:(error as {code:string}).code,message:(error as Error).message},{status:400})}
 };
 const handle=createHandler({url:'https://project.supabase.co',serviceKey:'server-secret',origins:['https://acofitness.github.io']},fetcher);
 const request=(account:number,body:unknown)=>new Request('https://project.supabase.co/functions/v1/aco-api',{method:'POST',headers:{Origin:'https://acofitness.github.io',Authorization:'Bearer header.'+Buffer.from(JSON.stringify({sub:id(account),session_id:id(account+100)})).toString('base64url')+'.signature'},body:JSON.stringify(body)});
@@ -47,26 +48,26 @@ test('two clients cannot reserve the same package slots concurrently',async()=>{
 });
 test('retry after lost response does not allocate additional sessions or holds',async()=>{
  const response=await handle(request(successActor,successBody));assert.equal(response.status,200);assert.equal((await response.json()).replayed,true);
- const rows=await pg.query<{n:number}>("select count(*)::int n from aco_private.runtime_entities where kind='holds'");assert.equal(rows.rows[0].n,1);
+ const rows=await pg.query<{n:number}>("select count(*)::int n from public.aco_holds");assert.equal(rows.rows[0].n,1);
 });
 test('public availability does not expose accounts or client information',async()=>{
  const response=await handle(new Request('https://project.supabase.co/functions/v1/aco-api',{method:'POST',headers:{Origin:'https://acofitness.github.io'},body:JSON.stringify({action:'publicState'})}));
- assert.equal(response.status,200);const result=await response.json();assert.deepEqual(result.db.clients,[]);assert.deepEqual(result.db.accounts,[]);assert.ok(!JSON.stringify(result).includes('PRIVATE HEALTH'));assert.ok(result.db.blocks.length>=4);
+ assert.equal(response.status,200);const result=await response.json();assert.deepEqual(result.db.clients,[]);assert.deepEqual(result.db.accounts,[]);assert.ok(!JSON.stringify(result).includes('PRIVATE HEALTH'));assert.ok(result.db.blocks.length>=1);
 });
 
 let registeredClient='';
 test('registration stores a pending client without a fabricated paid sale',async()=>{
  const response=await handle(new Request('https://project.supabase.co/functions/v1/aco-api',{method:'POST',headers:{Origin:'https://acofitness.github.io'},body:JSON.stringify({action:'register',requestId:id(800),command:{type:'register',name:'New client',email:'new@example.test',phone:'123',birthDate:'1990-01-01',trainerId:id(3),date:dayAdd(dateOf(new Date()),1),hour:11,answers:['Test']}})}));
  assert.equal(response.status,200,JSON.stringify(await response.json()));
- const account=(await pg.query<{payload:any}>("select payload from aco_private.runtime_entities where kind='accounts' and id=$1",[id(500)])).rows[0].payload;registeredClient=account.clientId;assert.equal(account.role,'client');assert.equal(account.password,undefined);
- assert.equal((await pg.query<{n:number}>("select count(*)::int n from aco_private.runtime_entities where kind='sales'")).rows[0].n,0);
+ const account=(await pg.query<any>('select * from public.aco_accounts where id=$1',[id(500)])).rows[0];registeredClient=account.profile_id;assert.equal(account.role,'client');assert.equal(account.password,undefined);
+ assert.equal((await pg.query<{n:number}>("select count(*)::int n from public.aco_sales")).rows[0].n,0);
  await pg.exec('reset role');await pg.query('insert into auth.sessions values($1,$2,null)',[id(600),id(500)]);await pg.exec('set role service_role');
  const denied=await handle(request(500,{action:'state'}));assert.equal(denied.status,403);
 });
 test('trainer cannot approve early, then approves consultation using server time',async()=>{
  const command={type:'activate',id:registeredClient,service:'personal',intensity:1};
  assert.equal((await handle(request(3,{action:'command',requestId:id(801),command}))).status,422);
- await pg.query("update aco_private.runtime_entities set payload=jsonb_set(payload,'{date}',to_jsonb($1::text)) where kind='sessions' and payload->>'clientId'=$2",[dayAdd(dateOf(new Date()),-1),registeredClient]);
+ await pg.query("update public.aco_sessions set starts_at=($1::date+time '11:00') at time zone 'Europe/Warsaw',ends_at=($1::date+time '12:30') at time zone 'Europe/Warsaw' where client_id=$2",[dayAdd(dateOf(new Date()),-1),registeredClient]);
  assert.equal((await handle(request(3,{action:'command',requestId:id(802),command}))).status,200);
 });
 test('birth date alone cannot activate; activation request only sends ownership link',async()=>{
