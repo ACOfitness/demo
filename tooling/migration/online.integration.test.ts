@@ -76,10 +76,18 @@ test('birth date alone cannot activate; activation request only sends ownership 
  assert.equal((await call('1990-01-01')).status,200);assert.equal(recoveries,1);
  assert.equal((await handle(request(500,{action:'state'}))).status,403);
  const activated=await handle(request(500,{action:'finishActivation',requestId:id(803),password:'A-new-password-123!'}));assert.equal(activated.status,200,JSON.stringify(await activated.json()));
- const state=await handle(request(500,{action:'state'}));assert.equal(state.status,200);const data=await state.json();assert.equal(data.db.clients.length,1);assert.equal(data.db.clients[0].active,true);
+ const state=await handle(request(500,{action:'state'}));assert.equal(state.status,200);const data=await state.json();assert.equal(data.db.clients.length,1);assert.equal(data.db.clients[0].active,true);assert.deepEqual(data.db.messages.map((m:any)=>m.title),['Witamy w ACO!']);
 });
 test('administrator password reset revokes already-issued sessions',async()=>{
  const result=await handle(request(4,{action:'resetPassword',requestId:id(804),accountId:id(3)}));assert.equal(result.status,200,JSON.stringify(await result.clone().json()));const body=await result.json();assert.ok(body.temporary.length>=20);
  assert.equal((await handle(request(3,{action:'state'}))).status,403);
  const replay=await handle(request(4,{action:'resetPassword',requestId:id(804),accountId:id(3)}));assert.equal(replay.status,200);assert.equal((await replay.json()).temporary,body.temporary);
+});
+test('locations are typed, admin-only, persisted and inaccessible through direct browser roles',async()=>{
+ const location=id(950);const cmd={type:'saveLocation',id:location,name:'Studio testowe',address:'Testowa 12'};
+ const denied=await handle(request(1,{action:'command',requestId:id(951),command:cmd}));assert.equal(denied.status,422);
+ const saved=await handle(request(4,{action:'command',requestId:id(952),command:cmd}));assert.equal(saved.status,200);assert.ok((await saved.json()).db.locations.some((l:any)=>l.id===location&&l.address==='Testowa 12'));
+ assert.equal((await pg.query<any>('select name from public.aco_locations where id=$1',[location])).rows[0].name,'Studio testowe');
+ const session=(await pg.query<any>('select id from public.aco_sessions limit 1')).rows[0].id;const changed=await handle(request(4,{action:'command',requestId:id(953),command:{type:'sessionLocation',id:session,locationId:location}}));assert.equal(changed.status,200);assert.equal((await pg.query<any>('select location_id from public.aco_sessions where id=$1',[session])).rows[0].location_id,location);
+ const security=await pg.query<any>("select relrowsecurity, has_table_privilege('authenticated','public.aco_locations','SELECT') browser_read from pg_class where oid='public.aco_locations'::regclass");assert.equal(security.rows[0].relrowsecurity,true);assert.equal(security.rows[0].browser_read,false);
 });
