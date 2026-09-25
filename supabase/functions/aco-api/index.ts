@@ -3,6 +3,8 @@ var defaultRules = { renewalDays: 7, cycleWeeks: 4, validWeeks: 6, coachHoldHour
 var rules = (db) => Object.fromEntries(Object.entries(defaultRules).map(([key, value]) => [key, db.settings.rules?.[key] ?? value]));
 var packagePrice = (db, service2, intensity) => db.settings.packagePrices?.[service2]?.[intensity] ?? db.settings[service2] * intensity * rules(db).cycleWeeks;
 var trainerHours = (t, day2) => t.weeklyHours ? t.weeklyHours[day2] || [] : t.days.includes(day2) ? t.hours : [];
+var defaultLocation = { id: "00000000-0000-4000-8000-000000000ac0", name: "Studio ACO!", address: "" };
+var locationsOf = (db) => db.locations?.length ? db.locations : [defaultLocation];
 var uid = () => crypto.randomUUID();
 var dateOf = (d) => new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Warsaw", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
 var dayAdd = (s, n) => {
@@ -207,7 +209,8 @@ function execute(source, a, cmd) {
       const c = db.clients.find((c2) => c2.id === cmd.id);
       if (a.role !== "client" || a.clientId !== c.id || !c.invited) throw Error("Brak zaproszenia do aktywacji.");
       c.active = true;
-      notify(db, "Witaj w ACO!", "Twoje konto jest aktywne. Mo\u017Cesz wybra\u0107 terminy trening\xF3w.", c.id);
+      notify(db, "Witamy w ACO!", "Twoje konto jest aktywne. Mo\u017Cesz wybra\u0107 terminy trening\xF3w.", c.id);
+      db.messages[0].target = "client";
       break;
     }
     case "register":
@@ -373,6 +376,27 @@ function execute(source, a, cmd) {
       db.blocks = db.blocks.filter((b2) => b2.id !== cmd.id);
       break;
     }
+    case "saveLocation": {
+      requireAdmin(a);
+      if (!cmd.name.trim() || cmd.name.length > 200 || cmd.address.length > 500) throw Error("Podaj nazw\u0119 miejsca (do 200 znak\xF3w) i adres (do 500 znak\xF3w).");
+      const locations = locationsOf(db).map((l) => ({ ...l }));
+      const location = locations.find((l) => l.id === cmd.id);
+      if (location) {
+        location.name = cmd.name.trim();
+        location.address = cmd.address.trim();
+      } else locations.push({ id: cmd.id, name: cmd.name.trim(), address: cmd.address.trim() });
+      db.locations = locations;
+      audit(db, "Zapisano miejsce: " + cmd.name.trim());
+      break;
+    }
+    case "sessionLocation": {
+      requireAdmin(a);
+      const s = getSession(db, a, cmd.id);
+      if (!locationsOf(db).some((l) => l.id === cmd.locationId)) throw Error("Wybierz istniej\u0105ce miejsce.");
+      s.locationId = cmd.locationId;
+      audit(db, "Zmieniono miejsce spotkania");
+      break;
+    }
     case "settings": {
       requireAdmin(a);
       if ([cmd.personal, cmd.physio, cmd.consultation, cmd.cancelHours].some((n) => !Number.isFinite(n) || n <= 0)) throw Error("Warto\u015Bci musz\u0105 by\u0107 wi\u0119ksze od zera.");
@@ -526,7 +550,9 @@ function recipients(db, a) {
   return db.accounts.filter((x) => !x.disabled && x.id !== accountOf(db, a)?.id && (a.role === "admin" || x.role === "admin" || a.role === "trainer" && x.role === "client" && db.clients.some((c) => c.id === x.clientId && c.trainerId === a.trainerId) || a.role === "client" && x.role === "trainer" && db.clients.some((c) => c.id === a.clientId && c.trainerId === x.trainerId)));
 }
 function notifications(db, a) {
-  const existing = db.messages.filter((m) => a.role === "admin" ? m.target === "admin" : m.target !== "admin" && (a.role === "client" ? m.clientId === a.clientId : m.target !== "client" && m.title !== "Mo\u017Cesz aktywowa\u0107 konto" && !!m.clientId && db.clients.some((c) => c.id === m.clientId && c.trainerId === a.trainerId)));
+  const welcome = db.messages.findIndex((m) => m.clientId === a.clientId && ["Witaj w ACO!", "Witamy w ACO!"].includes(m.title));
+  if (a.role === "client" && !db.clients.some((c) => c.id === a.clientId && c.active)) return [];
+  const existing = db.messages.filter((m, index) => a.role === "admin" ? m.target === "admin" : m.target !== "admin" && (a.role === "client" ? m.clientId === a.clientId && welcome >= 0 && index <= welcome : m.target !== "client" && m.title !== "Mo\u017Cesz aktywowa\u0107 konto" && !!m.clientId && db.clients.some((c) => c.id === m.clientId && c.trainerId === a.trainerId)));
   if (a.role !== "admin") return existing;
   return [...db.clients.filter((c) => !c.active).map((c) => ({ id: "activation-" + c.id, title: c.invited ? "Klient nie aktywowa\u0142 konta" : "Klient czeka na zatwierdzenie", body: `${c.name} \xB7 trener: ${db.trainers.find((t) => t.id === c.trainerId)?.name || "-"}`, at: db.now, read: false, target: "admin" })), ...db.holds.filter((h) => h.status !== "paid").map((h) => ({ id: "payment-" + h.id, title: h.expires <= db.now ? "Up\u0142yn\u0105\u0142 termin p\u0142atno\u015Bci" : "Rezerwacja oczekuje na p\u0142atno\u015B\u0107", body: `${db.clients.find((c) => c.id === h.clientId)?.name} \xB7 termin: ${new Date(h.expires).toLocaleString("pl-PL")}`, at: h.expires, read: false, target: "admin" })), ...existing];
 }
@@ -682,6 +708,7 @@ function projectState(source, userId) {
       hour: s.hour,
       kind: s.kind,
       status: s.status,
+      locationId: s.locationId,
       consultationPrice: s.consultationPrice,
       publicNote: s.publicNote,
       privateNote: me.role === "client" ? "" : s.privateNote,
@@ -698,6 +725,7 @@ function projectState(source, userId) {
     messages: source.messages.filter((m) => notifications(source, actor).some((n) => n.id === m.id)).map((m) => structuredClone(m)),
     letters: letters.map((m) => structuredClone(m)),
     noticeReads: { [me.id]: [...source.noticeReads?.[me.id] || []] },
+    locations: structuredClone(source.locations),
     audit: admin ? structuredClone(source.audit) : [],
     settings: structuredClone(source.settings),
     productCopies: structuredClone(source.productCopies),
@@ -722,6 +750,7 @@ function publicState(source) {
     audit: [],
     letters: [],
     trainers: source.trainers.filter((t) => !t.deleted).map((t) => ({ id: t.id, name: t.name, photo: t.photo, products: t.products, days: [...t.days], hours: [...t.hours], weeklyHours: structuredClone(t.weeklyHours), rate: 0 })),
+    locations: structuredClone(source.locations),
     settings: structuredClone(source.settings),
     productCopies: structuredClone(source.productCopies),
     blocks: occupiedSlots(source, /* @__PURE__ */ new Set())
@@ -762,6 +791,8 @@ var rules2 = object(Object.fromEntries(Object.keys(defaultRules).map((k) => [k, 
 var prices = object({ "1": number(0.01, 1e6), "2": number(0.01, 1e6), "3": number(0.01, 1e6) });
 var photo = (v) => typeof v === "string" && (v === "" || v.length <= 29e5 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v));
 var fields = {
+  saveLocation: { id, name: text(200, 1), address: text(500) },
+  sessionLocation: { id, locationId: id },
   updateProfile: { name: text(200, 1), email: text(254, 3), phone: text(40), photo },
   availability: { trainerId: id, days: array(day, 7), hours: array(hour, 24), weeklyHours: optional(object(Object.fromEntries(Array.from({ length: 7 }, (_, i) => [String(i), optional(array(hour, 24))])))) },
   requestPayment: { id, code: optional(text(100)) },
@@ -876,6 +907,7 @@ function encodeRelational(db, baseline = sourceRows.get(db) || []) {
     add("aco_products", { id: service2, name: copy.name, subtitle: copy.subtitle, bullets: copy.bullets });
     for (const intensity of [1, 2, 3]) add("aco_product_prices", { id: service2 + ":" + intensity, product_id: service2, intensity, amount_grosz: money(packagePrice(db, service2, intensity)) });
   }
+  for (const l of locationsOf(db)) add("aco_locations", { id: l.id, name: l.name, address: l.address });
   const settings = { consultation_grosz: money(db.settings.consultation), personal_grosz: money(db.settings.personal), physio_grosz: money(db.settings.physio), cancellation_hours: db.settings.cancelHours, ...ruleData(rules(db)) };
   add("aco_settings", { id: "company", ...settings });
   for (const p of db.promotions || []) add("aco_promotions", { id: p.id, kind: p.kind, value: p.value, percent: p.percent, max_uses: p.kind === "code" ? p.maxUses : null, used: p.used, expires_on: p.expires || null, active: p.active });
@@ -892,7 +924,7 @@ function encodeRelational(db, baseline = sourceRows.get(db) || []) {
   for (const s of db.substitutions) add("aco_substitutions", { id: s.id, client_id: s.clientId, trainer_id: s.trainerId, expires_at: iso(s.until), revoked_at: null });
   for (const s of db.sessions) {
     const start = starts(s.date, s.hour);
-    add("aco_sessions", { id: s.id, client_id: s.clientId, trainer_id: s.trainerId, substitution_id: s.substituteId || null, package_id: s.packageId || null, kind: s.kind, starts_at: start, ends_at: new Date(+new Date(start) + (s.kind === "consultation" ? 90 : 60) * 6e4).toISOString(), status: s.status, original_starts_at: original(s.original), consultation_grosz: money(s.consultationPrice) });
+    add("aco_sessions", { location_id: s.locationId || defaultLocation.id, id: s.id, client_id: s.clientId, trainer_id: s.trainerId, substitution_id: s.substituteId || null, package_id: s.packageId || null, kind: s.kind, starts_at: start, ends_at: new Date(+new Date(start) + (s.kind === "consultation" ? 90 : 60) * 6e4).toISOString(), status: s.status, original_starts_at: original(s.original), consultation_grosz: money(s.consultationPrice) });
     if (s.earned !== void 0) add("aco_earnings", { id: s.id, trainer_id: s.trainerId, session_id: s.id, kind: s.kind, hours: s.kind === "consultation" ? 1.5 : 1, rate_grosz: money(s.rate || 0), amount_grosz: money(s.earned), month: s.date.slice(0, 7) + "-01", description: "" });
     add("aco_public_notes", { session_id: s.id, body: s.publicNote });
     add("aco_trainer_notes", { session_id: s.id, body: s.privateNote });
@@ -915,7 +947,7 @@ function decodeRelational(snapshot) {
   const profile = (id2) => profiles.find((p) => p.id === id2) || get("aco_trainer_directory").find((p) => p.id === id2) || {};
   const accountId = (profileId) => accounts.find((a) => a.profile_id === profileId)?.id || profileId;
   const setting = get("aco_settings")[0] || {};
-  const db = { version: 1, now: new Date(snapshot.now).toISOString(), accounts: [], clients: [], trainers: [], sessions: [], packages: [], holds: [], messages: [], sales: [], substitutions: [], audit: [], blocks: [], letters: [], noticeReads: {}, promotions: [], extraHours: [], productCopies: {}, settings: { personal: (setting.personal_grosz ?? 18e3) / 100, physio: (setting.physio_grosz ?? 22e3) / 100, consultation: (setting.consultation_grosz ?? 25e3) / 100, cancelHours: setting.cancellation_hours ?? 24, rules: readRules(setting), packagePrices: { personal: {}, physio: {} } } };
+  const db = { version: 1, now: new Date(snapshot.now).toISOString(), locations: get("aco_locations").map((l) => ({ id: l.id, name: l.name, address: l.address })), accounts: [], clients: [], trainers: [], sessions: [], packages: [], holds: [], messages: [], sales: [], substitutions: [], audit: [], blocks: [], letters: [], noticeReads: {}, promotions: [], extraHours: [], productCopies: {}, settings: { personal: (setting.personal_grosz ?? 18e3) / 100, physio: (setting.physio_grosz ?? 22e3) / 100, consultation: (setting.consultation_grosz ?? 25e3) / 100, cancelHours: setting.cancellation_hours ?? 24, rules: readRules(setting), packagePrices: { personal: {}, physio: {} } } };
   for (const a of accounts) {
     const p = profile(a.profile_id);
     db.accounts.push({ id: a.id, email: p.email || "", name: p.name, phone: p.phone, photo: p.avatar_path || void 0, role: a.role, disabled: !a.enabled, mustChangePassword: !!p.must_change_password, ...a.role === "client" ? { clientId: a.profile_id } : a.role === "trainer" ? { trainerId: a.profile_id } : {} });
@@ -938,7 +970,7 @@ function decodeRelational(snapshot) {
   for (const s of get("aco_substitutions")) if (!s.revoked_at) db.substitutions.push({ id: s.id, clientId: s.client_id, trainerId: s.trainer_id, until: iso(s.expires_at) });
   for (const s of get("aco_sessions")) {
     const earning = get("aco_earnings").find((e) => e.session_id === s.id);
-    db.sessions.push({ id: s.id, clientId: s.client_id, trainerId: s.trainer_id, packageId: s.package_id || void 0, substituteId: s.substitution_id || void 0, kind: s.kind, status: s.status, date: wall(s.starts_at).slice(0, 10), hour: Number(wall(s.starts_at).slice(11, 13)), original: s.original_starts_at ? wall(s.original_starts_at) : void 0, consultationPrice: s.consultation_grosz == null ? void 0 : s.consultation_grosz / 100, rate: earning ? earning.rate_grosz / 100 : void 0, earned: earning ? earning.amount_grosz / 100 : void 0, publicNote: get("aco_public_notes").find((n) => n.session_id === s.id)?.body || "", privateNote: get("aco_trainer_notes").find((n) => n.session_id === s.id)?.body || "", comments: get("aco_comments").filter((c) => c.session_id === s.id).map((c) => ({ id: c.id, author: c.author_label || profile(c.author_id).name || "", text: c.body, at: iso(c.created_at) })) });
+    db.sessions.push({ locationId: s.location_id || defaultLocation.id, id: s.id, clientId: s.client_id, trainerId: s.trainer_id, packageId: s.package_id || void 0, substituteId: s.substitution_id || void 0, kind: s.kind, status: s.status, date: wall(s.starts_at).slice(0, 10), hour: Number(wall(s.starts_at).slice(11, 13)), original: s.original_starts_at ? wall(s.original_starts_at) : void 0, consultationPrice: s.consultation_grosz == null ? void 0 : s.consultation_grosz / 100, rate: earning ? earning.rate_grosz / 100 : void 0, earned: earning ? earning.amount_grosz / 100 : void 0, publicNote: get("aco_public_notes").find((n) => n.session_id === s.id)?.body || "", privateNote: get("aco_trainer_notes").find((n) => n.session_id === s.id)?.body || "", comments: get("aco_comments").filter((c) => c.session_id === s.id).map((c) => ({ id: c.id, author: c.author_label || profile(c.author_id).name || "", text: c.body, at: iso(c.created_at) })) });
   }
   for (const b of get("aco_blackouts")) db.blocks.push({ id: b.id, trainerId: b.trainer_id, date: wall(b.starts_at).slice(0, 10), hour: Number(wall(b.starts_at).slice(11, 13)), visibility: b.visibility });
   for (const b of get("aco_busy_slots")) db.blocks.push({ id: "busy:" + b.trainer_id + ":" + b.starts_at, trainerId: b.trainer_id, date: wall(b.starts_at).slice(0, 10), hour: Number(wall(b.starts_at).slice(11, 13)), visibility: "busy" });
