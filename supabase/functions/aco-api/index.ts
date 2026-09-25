@@ -1057,12 +1057,24 @@ async function publicAction(body, req, services) {
   let snapshot = await rpc("aco_relational_public_load", { p_email: lookupEmail }), db = decodeRelational(snapshot);
   if (body.action === "publicState") return { accountId: "", revision: snapshot.revision, db: publicState(db) };
   if (body.action === "activation") {
-    if (typeof body.email !== "string" || body.email.length > 254 || typeof body.birthDate !== "string") throw Error("Uzupe\u0142nij e-mail i dat\u0119 urodzenia.");
+    if (typeof body.email !== "string" || body.email.length > 254 || typeof body.birthDate !== "string" || !validBirthDate(body.birthDate, db.now)) throw Error("Uzupe\u0142nij e-mail i dat\u0119 urodzenia.");
     const email2 = body.email.trim().toLowerCase();
-    if (!await rpc("aco_rate_limit", { p_key: await hash2("activation-email:" + email2), p_max: 3, p_seconds: 3600 })) return { ok: true };
+    if (!await rpc("aco_rate_limit", { p_key: await hash2("activation-email:" + email2), p_max: 6, p_seconds: 3600 })) throw Error("Zbyt wiele pr\xF3b. Spr\xF3buj ponownie p\xF3\u017Aniej.");
     const account = db.accounts.find((a) => a.email === email2 && a.role === "client" && !a.disabled), client = db.clients.find((c) => c.id === account?.clientId);
-    if (client?.invited && client.birthDate === body.birthDate) {
-      await auth("/recover?redirect_to=" + encodeURIComponent("https://acofitness.github.io/demo/panel.html?activation=1"), "POST", { email: email2 });
+    if (!account || !client?.invited || !client.prescribed || client.active || client.birthDate !== body.birthDate) throw Error("Nie mo\u017Cna aktywowa\u0107 konta. Sprawd\u017A dane i zatwierdzenie konsultacji. Je\u015Bli konto jest ju\u017C aktywne, przejd\u017A do logowania.");
+    if (body.password === void 0) return { ok: true };
+    if (typeof body.password !== "string" || body.password.length < 12 || body.password.length > 200) throw Error("Has\u0142o musi mie\u0107 od 12 do 200 znak\xF3w.");
+    const claim = await rpc("aco_claim_activation", { p_email: email2, p_birth_date: body.birthDate, p_request: body.requestId });
+    try {
+      if (claim.fresh) {
+        await auth("/admin/users/" + claim.userId, "PUT", { password: body.password, email_confirm: true });
+      } else {
+        const session = await auth("/token?grant_type=password", "POST", { email: email2, password: body.password });
+        if (session.user?.id !== claim.userId) throw Error("Invalid activation identity");
+      }
+      await rpc("aco_complete_activation", { p_user: claim.userId, p_request: claim.requestId });
+    } catch {
+      throw Error("Nie uda\u0142o si\u0119 doko\u0144czy\u0107 aktywacji. Spr\xF3buj ponownie z tym samym has\u0142em. Je\u015Bli problem pozostanie, skontaktuj si\u0119 z administratorem.");
     }
     return { ok: true };
   }
@@ -1121,11 +1133,6 @@ async function trainerAction(db, body, userId, services) {
   delete account.password;
   delete account.token;
   return next;
-}
-function finishActivation(db, userId) {
-  const me = db.accounts.find((a) => a.id === userId && !a.disabled), client = db.clients.find((c) => c.id === me?.clientId);
-  if (me?.role !== "client" || !client?.invited || !client.prescribed) throw Error("Konto oczekuje na zatwierdzenie konsultacji.");
-  return execute(db, actorFor(me), { type: "acceptInvite", id: client.id });
 }
 
 // server/handler.ts
@@ -1202,10 +1209,10 @@ function createHandler(config, fetcher = fetch) {
       } catch {
         throw new ApiError(400, "Nieprawid\u0142owy formularz.");
       }
-      const allowed = { state: [], quote: ["id", "code"], command: ["requestId", "command"], publicState: [], register: ["requestId", "command"], activation: ["email", "birthDate"], trainer: ["requestId", "input"], resetPassword: ["requestId", "accountId"], changePassword: ["requestId", "oldPassword", "password"], finishActivation: ["requestId", "password"] };
+      const allowed = { state: [], quote: ["id", "code"], command: ["requestId", "command"], publicState: [], register: ["requestId", "command"], activation: ["email", "birthDate", "password", "requestId"], trainer: ["requestId", "input"], resetPassword: ["requestId", "accountId"], changePassword: ["requestId", "oldPassword", "password"] };
       if (!body || typeof body !== "object" || Array.isArray(body) || !Object.hasOwn(allowed, body.action) || Object.keys(body).some((k) => k !== "action" && !allowed[body.action].includes(k))) throw new ApiError(400, "Nieprawid\u0142owe \u017C\u0105danie.");
       if (["publicState", "register", "activation"].includes(body.action)) {
-        if (body.action === "register" && !uuid.test(body.requestId)) throw new ApiError(400, "Brak identyfikatora operacji.");
+        if ((body.action === "register" || body.action === "activation" && body.password !== void 0) && !uuid.test(body.requestId)) throw new ApiError(400, "Brak identyfikatora operacji.");
         try {
           return reply(await publicAction(body, req, services));
         } catch (error) {
@@ -1226,7 +1233,7 @@ function createHandler(config, fetcher = fetch) {
         const snapshot = await rpc("aco_relational_load", args), db = decodeRelational(snapshot);
         let me;
         try {
-          me = body.action === "finishActivation" ? db.accounts.find((a) => a.id === identity.id && !a.disabled) : identityAccount(db, identity.id);
+          me = identityAccount(db, identity.id);
         } catch {
           throw new ApiError(403, "Konto nie jest aktywne lub dost\u0119p zosta\u0142 odebrany.");
         }
@@ -1293,7 +1300,7 @@ function createHandler(config, fetcher = fetch) {
             next = structuredClone(db);
             next.accounts.find((a) => a.id === target.id).mustChangePassword = true;
             extra = { temporary };
-          } else if (body.action === "changePassword" || body.action === "finishActivation") {
+          } else if (body.action === "changePassword") {
             if (typeof body.password !== "string" || body.password.length < 12 || body.password.length > 200) throw Error("Has\u0142o musi mie\u0107 od 12 do 200 znak\xF3w.");
             if (body.action === "changePassword" && !passwordUpdated) {
               if (typeof body.oldPassword !== "string" || body.oldPassword === body.password) throw Error("Wpisz inne has\u0142o ni\u017C dotychczasowe.");
@@ -1303,7 +1310,7 @@ function createHandler(config, fetcher = fetch) {
                 await auth("/token?grant_type=password", "POST", { email: me.email, password: body.password });
               }
             }
-            next = body.action === "finishActivation" ? finishActivation(db, me.id) : structuredClone(db);
+            next = structuredClone(db);
             if (!passwordUpdated) {
               await auth("/user", "PUT", { password: body.password }, req.headers.get("Authorization").slice(7));
               passwordUpdated = true;
