@@ -1,0 +1,12 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {createHandler} from '../server/handler';
+const config={url:'https://project.supabase.co',serviceKey:'server-only',origins:['https://acofitness.github.io']};
+const actor='00000000-0000-4000-8000-000000000001',session='00000000-0000-4000-8000-000000000002';
+const token=(claims:unknown)=>'header.'+btoa(JSON.stringify(claims)).replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_')+'.signature';
+const request=(body:unknown,auth=token({sub:actor,session_id:session}))=>new Request('https://project.supabase.co/functions/v1/aco-api',{method:'POST',headers:{origin:config.origins[0],Authorization:'Bearer '+auth},body:JSON.stringify(body)});
+test('CORS denies unrelated origins before contacting database',async()=>{let called=false;const handle=createHandler(config,async()=>{called=true;throw Error()});const response=await handle(new Request('https://project.supabase.co',{method:'POST',headers:{Origin:'https://evil.example'},body:'{}'}));assert.equal(response.status,403);assert.equal(called,false)});
+test('Auth rejects forged tokens before decoding claims or calling database',async()=>{const calls:string[]=[];const handle=createHandler(config,async input=>{calls.push(String(input));return Response.json({error:'invalid'},{status:401})});const response=await handle(request({action:'state'}));assert.equal(response.status,401);assert.equal(calls.length,1);assert.ok(calls[0].endsWith('/auth/v1/user'))});
+test('valid user with a different JWT subject cannot select another identity',async()=>{const handle=createHandler(config,async()=>Response.json({id:actor}));const response=await handle(request({action:'state'},token({sub:'other',session_id:session})));assert.equal(response.status,401)});
+test('request body has size and unknown-field limits',async()=>{const handle=createHandler(config,async()=>{throw Error('Should not call')});assert.equal((await handle(request({action:'state',role:'admin'}))).status,400);assert.equal((await handle(request({action:'state',padding:'x'.repeat(3100000)}))).status,413)});
+test('server returns no business data for a revoked session',async()=>{let calls=0;const handle=createHandler(config,async()=>++calls===1?Response.json({id:actor}):Response.json({code:'42501',message:'Session revoked'},{status:403}));const result=await handle(request({action:'state'}));assert.equal(result.status,403);assert.equal((await result.json()).db,undefined)});
