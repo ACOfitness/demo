@@ -52,8 +52,22 @@ kontrola TypeScript obejmująca frontend i serwer, build produkcyjny.
 Testy obejmują role, prywatne notatki i korespondencję, zastępstwa, podmianę
 użytkownika, SQL injection jako parametr, podwójną rezerwację, ponawianie
 zapisu, unieważnienie sesji oraz rejestrację i aktywację.
-Zdalnie sprawdzono brak danych prywatnych w publicznym API i odmowę dostępu
-bez logowania; testy lokalne nie zastępują pełnego zewnętrznego audytu.
+Zdalnie sprawdzono brak danych prywatnych w publicznym API, odmowę dostępu
+bez logowania i odmowę bezpośredniego wywołania uprzywilejowanego RPC.
+Właściciel zalogował się jako administrator. Zweryfikowano zapis ustawienia,
+ponowny odczyt po odświeżeniu i przywrócenie pierwotnej wartości (15 minut).
+Sprawdzono główne ekrany administratora. Testy nie zastępują zewnętrznego audytu.
+
+GitHub Actions: https://github.com/ACOfitness/demo/actions/runs/36143284561
+Wdrożenie zakończone sukcesem, commit `b3c4f199b2e70495ea90155d416343e5f5ff6d40`.
+Wersja online została sprawdzona w przeglądarce; publiczny plik JavaScript
+jest identyczny z lokalnie przetestowanym buildem (`index-CRA4FjJe.js`).
+Funkcja Edge: SHA-256 `1a36f864226d70b80400095a9d4bd266a3e689dfdeb1a2e9fd98d16a8a3e209a`.
+Audyt zależności produkcyjnych: brak znanych podatności w dniu wdrożenia.
+Supabase Security Advisor: 0 błędów, 1 ostrzeżenie o wyłączonym sprawdzaniu
+haseł z wycieków (funkcja wymaga planu Pro). 6 informacji o RLS bez polityk
+dotyczy prywatnych tabel serwera i jest zamierzone. Auth wymaga minimum
+12 znaków w nowych hasłach.
 
 ## Integracje i ograniczenia operacyjne
 
