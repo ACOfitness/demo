@@ -1,7 +1,7 @@
 import {Database,TrainerInput} from './auth';
 import React from 'react';
 import {State,Actor,Command} from './domain';
-export type Modal = {type:'session'|'client'|'wizard'|'reschedule'|'makeup'|'substitute'|'payment'|'editHold'|'editTrainer'|'trainerClients'|'availability'|'resetPassword'|'companyHours'|'validity';id:string}|{type:'newTrainer'|'profile'}|{type:'block';trainerId?:string;date?:string;hour?:number}|{type:'confirm';title:string;body:string;command?:Command};
+export type Modal = {type:'schedule'|'session'|'client'|'wizard'|'reschedule'|'makeup'|'substitute'|'payment'|'editHold'|'editTrainer'|'trainerClients'|'availability'|'resetPassword'|'companyHours'|'validity';id:string}|{type:'newTrainer'|'profile'}|{type:'block';trainerId?:string;date?:string;hour?:number}|{type:'confirm';title:string;body:string;command?:Command};
 export const Context=React.createContext<{db:Database;actor:Actor;quoteHold:(id:string,code:string)=>Promise<{base:number;total:number;percent:number}>;back:()=>void;canBack:boolean;feedback:string;resetPassword:(id:string)=>Promise<string>;noticeId:string;openNotice:(id:string)=>void;run:(cmd:Command,message?:string,confirmed?:boolean)=>Promise<boolean>;modal:Modal|null;open:(m:Modal|null)=>void;page:string;go:(p:string)=>void;toast:(s:string)=>void;registerClient:(cmd:Extract<Command,{type:"register"}>)=>Promise<void>;createTrainer:(input:TrainerInput)=>Promise<void>}>(null!);
 export const useApp=()=>React.useContext(Context);
 export const initials=(n:string)=>n.split(' ').map(s=>s[0]).slice(0,2).join('');
