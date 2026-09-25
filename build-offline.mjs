@@ -1,0 +1,20 @@
+import {readFile,writeFile,readdir} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import path from 'node:path';
+const root=path.dirname(fileURLToPath(import.meta.url));
+const assets=await readdir(path.join(root,'dist/assets'));
+const js=await readFile(path.join(root,'dist/assets',assets.find(f=>f.endsWith('.js'))),'utf8');
+const css=await readFile(path.join(root,'dist/assets',assets.find(f=>f.endsWith('.css'))),'utf8');
+const svg=await readFile(path.join(root,'public/favicon.svg'),'utf8');
+let html=await readFile(path.join(root,'dist/index.html'),'utf8');
+html=html.replace(/<script[^>]*src="[^"]+"[^>]*><\/script>/,'');
+html=html.replace(/<link[^>]*rel="stylesheet"[^>]*>/g,'');
+html=html.replace('href="/favicon.svg"',`href="data:image/svg+xml,${encodeURIComponent(svg)}"`);
+html=html.replace('</head>',()=>`<style>${css}</style></head>`);
+html=html.replace('</body>',()=>`<script type="module">${js.replace(/<\/script/gi,'<\\/script')}</script></body>`);
+await writeFile(path.join(root,'demo-offline.html'),html);
+await writeFile(path.join(root,'../ACO-demo-offline.html'),html);
+console.log(`Standalone demo: ${Math.round(Buffer.byteLength(html)/1024)} KB, no external assets.`);
+
+await writeFile(path.join(root,'panel.html'),html);
+await writeFile(path.join(root,'../ACO-panel.html'),html);
