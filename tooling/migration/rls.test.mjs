@@ -1,6 +1,6 @@
 import {PGlite} from '@electric-sql/pglite';
 import {readFile} from 'node:fs/promises';
-import {test} from 'node:test';
+import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 const db=new PGlite();
 const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
@@ -31,3 +31,5 @@ test('Direct updates and role escalation are denied to browser clients',async()=
 test('Unauthenticated requests have no access',async()=>{await db.exec('begin;set local role anon');try{await assert.rejects(()=>count('aco_clients'),/permission denied/)}finally{await db.exec('rollback')}});
 test('SQL injection string remains a value in a parameterized query',async()=>asUser(5,async()=>{assert.equal((await db.query('select * from public.aco_profiles where email=$1',["x' OR true; --"])).rows.length,0);assert.equal(await count('aco_clients'),1)}));
 test('Every application table has RLS enabled',async()=>{const result=await db.query("select c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','aco_private') and c.relkind='r' and not c.relrowsecurity");assert.deepEqual(result.rows,[])});
+
+after(()=>db.close());
