@@ -29,7 +29,7 @@ function App(){const revision=useRef(-1),inFlight=useRef(false);const [activatio
  useEffect(()=>{if(!online){setFailure('Połączenie z ACO! nie jest jeszcze skonfigurowane.');return}let alive=true;const refresh=async()=>{if(inFlight.current||activationLink)return;try{const result=await online.load();if(alive)receive(result)}catch(error){if(alive)setFailure((error as Error).message)}};void refresh();const timer=setInterval(refresh,30000);return()=>{alive=false;clearInterval(timer)}},[activationLink]);
  useEffect(()=>{if(notice){const t=setTimeout(()=>setNotice(''),6000);return()=>clearTimeout(t)}},[notice]);
  if(activationLink&&online)return <OnlineActivation save={async password=>{const result=await online.finishActivation(password);window.history.replaceState(null,'',location.pathname);setActivationLink(false);receive(result)}}/>;
- if(!db)return <div className="auth-loading">{failure||'ACO!'}</div>;
+ if(!db)return <div className="auth-loading" role={failure?'alert':'status'} aria-busy={!failure}><Brand/>{failure?<p className="auth-loading-error">{failure}</p>:<span className="visually-hidden">Ładowanie panelu…</span>}</div>;
  const latest=()=>db;
  const account=db.accounts.find(a=>a.id===accountId&&!a.disabled);const actor=account?actorFor(account):guest;
  const open=(m:Modal|null)=>{setFeedback('');if(m&&modal)setHistory(h=>[...h,modal]);else if(!m)setHistory([]);setModal(m)};const back=()=>{const previous=history.at(-1);if(previous){setHistory(h=>h.slice(0,-1));setFeedback('');setModal(previous)}};const go=(p:string)=>{setHistory([]);setPage(p==='Grafik'?'Grafik trenerów':p);setModal(null);window.scrollTo({top:0,behavior:'smooth'})};
