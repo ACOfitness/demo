@@ -1,46 +1,52 @@
-# ACO! — migration status
+# ACO! — stan publikacji i migracji
 
-Target accounts verified in the private Safari window on 2026-09-25:
-- GitHub repository: https://github.com/ACOfitness/demo
-- Supabase organization: ACO! (`vhxmjllgcmcucczuxsya`)
-- Supabase project: `kxbqigvxmrzxaszovdoo`
-- Do not use BigBearFilm repositories, projects, authentication, or deployment credentials.
+## Wdrożone 25 września 2026
 
-## Completed locally
+- Publiczne repozytorium: https://github.com/ACOfitness/demo
+- Panel: https://acofitness.github.io/demo/panel.html
+- GitHub Actions: https://github.com/ACOfitness/demo/actions/runs/36135481910
+- Organizacja Supabase ACO!, projekt `kxbqigvxmrzxaszovdoo` (London).
+- Migracja `20260925094836_aco_access_foundation.sql` wykonana przez SQL Editor
+  w prywatnej sesji Safari konta ACO!. Nie jest jeszcze zarejestrowana przez CLI
+  w historii migracji — przed pierwszym `db push` należy uzgodnić historię,
+  a nie wykonywać tego skryptu drugi raz.
+- 17 tabel ma RLS. Kontrola w zdalnej bazie: 0 tabel bez RLS,
+  0 bezpośrednich uprawnień zapisu dla anon/authenticated w tabelach aplikacji.
+- Supabase Security Advisor po ponownym uruchomieniu: 0 błędów, 0 ostrzeżeń.
+  Dwie informacje „RLS Enabled No Policy” dotyczą `aco_private.identities`
+  oraz `aco_private.audit_log`. To celowe: role przeglądarkowe nie mają
+  dostępu do tych tabel; nie dodawać szerokich polityk, aby uciszyć sugestie.
+- 44 testy aplikacji oraz 11 testów PostgreSQL/PGlite przechodzą lokalnie.
+  GitHub Actions dodatkowo wykonał testy aplikacji i build przed publikacją.
+- Sprawdzono zgodność opublikowanych plików źródłowych i sum plików JS/CSS
+  z lokalnym buildem oraz otwarcie panelu przez HTTPS.
+- Nie przenoszono danych osobowych ani baz z przeglądarki. Nie używano kont Big Bear.
 
-The access-foundation migration creates separate tables for profiles, trainer payroll,
-clients, sessions, public notes, trainer-only notes, messages, packages, earnings,
-products and promotions. All tables have RLS. Browser roles have read-only grants;
-private identity roles and audit records have no browser read/write grants.
+## Obecna strona nadal działa lokalnie
 
-Identity is derived from auth.uid() and a server-controlled enabled membership.
-User-editable JWT metadata never controls permissions. Membership and substitute
-expiry are checked on each query. Message access belongs to participants only,
-including for administrator accounts. Former lead trainers retain access to their
-historical sessions; expired substitute access does not grant perpetual history.
+GitHub Pages hostuje obecną wersję zapisującą dane w localStorage.
+Nie jest jeszcze połączona z Supabase. Konta i dane nie synchronizują się
+między urządzeniami. Przy pierwszym uruchomieniu użytkownik ustawia własne
+hasło lokalnego administratora; w źródłach nie ma domyślnego hasła.
 
-11 PostgreSQL authorization tests pass using PGlite and a minimal Supabase Auth
-fixture. They cover anonymous access, cross-client and cross-trainer access, private
-notes/payroll, administrator message isolation, expired substitutes, disabled users,
-metadata role forgery, direct writes, SQL injection parameters and RLS coverage.
-These are not an end-to-end production penetration test.
+Przygotowany schemat Supabase to fundament uprawnień, nie gotowy backend.
+Zapis z ról przeglądarkowych jest celowo zablokowany do czasu wdrożenia
+walidowanych operacji serwerowych.
 
-## Not yet completed or deployed
+## Pozostałe prace przed wersją online
 
-- GitHub Pages deployment verification. Source publication to the PUBLIC
-  ACOfitness/demo repository is underway. Do not change visibility to private.
-- Remote migrations, Supabase security advisors and real API tests.
-- Auth login/invite/recovery and first-administrator bootstrap.
-- Replacement of localStorage and synchronous client-side mutations.
-- Transactional scheduling, concurrent reservation/payment protection and rate limits.
-- Public registration endpoints with throttling and verified email ownership.
-- Payment verification (browser payment simulation must not grant online packages).
-- Protected avatar storage and signed URLs.
-- End-to-end permission tests with multiple real Supabase test users.
-- Deployment origin, redirect allowlist, MFA setup, backups and restore rehearsal.
+- Supabase Auth, potwierdzanie własności adresu e-mail, aktywacja i odzyskiwanie
+  dostępu; bezpieczne utworzenie pierwszego administratora online.
+- Zastąpienie localStorage i synchronicznych operacji w interfejsie.
+- Transakcyjne rezerwacje, ochrona przed równoczesnym zakupem tego samego
+  terminu, walidacja danych, limity żądań i rejestrowanie operacji.
+- Serwerowa weryfikacja płatności; symulacja przeglądarkowa nie może wydawać
+  opłaconych pakietów w systemie produkcyjnym.
+- Prywatne zdjęcia, adresy przekierowań Auth, MFA administracji i kopie bazy.
+- Testy rzeczywistych API dla różnych ról i kont, w tym próby przekroczenia
+  uprawnień oraz odwołania dostępu po zakończeniu zastępstwa.
 
-The offline panel remains unchanged. No demo data, passwords, or password hashes
-have been imported. The foundation is intentionally read-only from browser roles;
-it must not be presented as a working online migration.
-
-GitHub Pages workflow prepared locally (manual dispatch, tests before deployment, repository-relative asset paths). Not uploaded or deployed yet. Pages hosts the frontend only; it does not secure the offline authentication implementation.
+Integracja narzędziowa Supabase w Codex nadal odmawia dostępu do tego projektu.
+Dostęp przez zalogowane Safari działa. Nie kopiować kluczy service_role do
+repozytorium, strony, komunikatów ani localStorage. Nie traktować sprawdzenia
+fundamentu RLS jako pełnego testu bezpieczeństwa gotowego systemu.
