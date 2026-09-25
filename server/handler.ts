@@ -1,6 +1,6 @@
 import {quote} from '../src/business';
 import {canSee} from '../src/domain';
-import {publicAction,trainerAction,finishActivation} from './accounts';
+import {publicAction,trainerAction} from './accounts';
 import {applyCommand} from './commands';
 import {identityAccount,projectState,publicState} from './access';
 import {relationalCommitArgs,decodeRelational as decode,type RelationalSnapshot as Snapshot} from './relational-store';
@@ -51,10 +51,10 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
    while(true){const part=await reader.read();if(part.done)break;size+=part.value.byteLength;if(size>3000000){await reader.cancel();throw new ApiError(413,'Formularz jest zbyt duży.')}chunks.push(part.value)}
    const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length}
    let body;try{body=JSON.parse(new TextDecoder().decode(bytes))}catch{throw new ApiError(400,'Nieprawidłowy formularz.')}
-   const allowed:Record<string,string[]>={state:[],quote:['id','code'],command:['requestId','command'],publicState:[],register:['requestId','command'],activation:['email','birthDate'],trainer:['requestId','input'],resetPassword:['requestId','accountId'],changePassword:['requestId','oldPassword','password'],finishActivation:['requestId','password']};
+   const allowed:Record<string,string[]>={state:[],quote:['id','code'],command:['requestId','command'],publicState:[],register:['requestId','command'],activation:['email','birthDate','password','requestId'],trainer:['requestId','input'],resetPassword:['requestId','accountId'],changePassword:['requestId','oldPassword','password']};
    if(!body||typeof body!=='object'||Array.isArray(body)||!Object.hasOwn(allowed,body.action)||Object.keys(body).some(k=>k!=='action'&&!allowed[body.action].includes(k)))throw new ApiError(400,'Nieprawidłowe żądanie.');
    if(['publicState','register','activation'].includes(body.action)){
-    if(body.action==='register'&&!uuid.test(body.requestId))throw new ApiError(400,'Brak identyfikatora operacji.');
+    if((body.action==='register'||body.action==='activation'&&body.password!==undefined)&&!uuid.test(body.requestId))throw new ApiError(400,'Brak identyfikatora operacji.');
     try{return reply(await publicAction(body,req,services))}catch(error){throw error instanceof ApiError?error:new ApiError(422,error instanceof Error?error.message:'Nieprawidłowe dane.')}
    }
    const identity=await authenticate(req),mutating=!['state','quote'].includes(body.action);
@@ -69,7 +69,7 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
    };
    for(let attempt=0;attempt<3;attempt++){
     const snapshot=await rpc<Snapshot&{receipt?:{hash:string;revision:number}}>('aco_relational_load',args),db=decode(snapshot);
-    let me;try{me=body.action==='finishActivation'?db.accounts.find(a=>a.id===identity.id&&!a.disabled):identityAccount(db,identity.id)}catch{throw new ApiError(403,'Konto nie jest aktywne lub dostęp został odebrany.');}
+    let me;try{me=identityAccount(db,identity.id)}catch{throw new ApiError(403,'Konto nie jest aktywne lub dostęp został odebrany.');}
     if(!me)throw new ApiError(403,'Brak dostępu do konta.');
     if(identity.email&&identity.email!==me.email){
      const synced=structuredClone(db),account=synced.accounts.find(a=>a.id===me.id)!;account.email=identity.email;
@@ -115,13 +115,13 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
       await rpc('aco_revoke_sessions',{p_target:target.id});
       await auth('/admin/users/'+target.id,'PUT',{password:temporary});
       next=structuredClone(db);next.accounts.find(a=>a.id===target.id)!.mustChangePassword=true;extra={temporary};
-     }else if(body.action==='changePassword'||body.action==='finishActivation'){
+     }else if(body.action==='changePassword'){
       if(typeof body.password!=='string'||body.password.length<12||body.password.length>200)throw Error('Hasło musi mieć od 12 do 200 znaków.');
       if(body.action==='changePassword'&&!passwordUpdated){
        if(typeof body.oldPassword!=='string'||body.oldPassword===body.password)throw Error('Wpisz inne hasło niż dotychczasowe.');
        try{await auth('/token?grant_type=password','POST',{email:me.email,password:body.oldPassword})}catch{await auth('/token?grant_type=password','POST',{email:me.email,password:body.password})}
       }
-      next=body.action==='finishActivation'?finishActivation(db,me.id):structuredClone(db);
+      next=structuredClone(db);
       if(!passwordUpdated){await auth('/user','PUT',{password:body.password},req.headers.get('Authorization')!.slice(7));passwordUpdated=true}
       next.accounts.find(a=>a.id===me.id)!.mustChangePassword=false;
      }else throw Error('Nieznana operacja.');

@@ -19,14 +19,26 @@ export async function publicAction(body:any,req:Request,services:AccountServices
  let snapshot=await rpc<Snapshot>('aco_relational_public_load',{p_email:lookupEmail}),db=decode(snapshot);
  if(body.action==='publicState')return {accountId:'',revision:snapshot.revision,db:publicState(db)};
  if(body.action==='activation'){
-  if(typeof body.email!=='string'||body.email.length>254||typeof body.birthDate!=='string')throw Error('Uzupełnij e-mail i datę urodzenia.');
+  if(typeof body.email!=='string'||body.email.length>254||typeof body.birthDate!=='string'||!validBirthDate(body.birthDate,db.now))throw Error('Uzupełnij e-mail i datę urodzenia.');
   const email=body.email.trim().toLowerCase();
-  if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash('activation-email:'+email),p_max:3,p_seconds:3600}))return {ok:true};
+  if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash('activation-email:'+email),p_max:6,p_seconds:3600}))throw Error('Zbyt wiele prób. Spróbuj ponownie później.');
   const account=db.accounts.find(a=>a.email===email&&a.role==='client'&&!a.disabled),client=db.clients.find(c=>c.id===account?.clientId);
-  if(client?.invited&&client.birthDate===body.birthDate){
-   // Ownership is proven by the emailed one-time link, never by birth date alone.
-   await auth('/recover?redirect_to='+encodeURIComponent('https://acofitness.github.io/demo/panel.html?activation=1'),'POST',{email});
-  }
+  if(!account||!client?.invited||!client.prescribed||client.active||client.birthDate!==body.birthDate)throw Error('Nie można aktywować konta. Sprawdź dane i zatwierdzenie konsultacji. Jeśli konto jest już aktywne, przejdź do logowania.');
+  if(body.password===undefined)return {ok:true};
+  if(typeof body.password!=='string'||body.password.length<12||body.password.length>200)throw Error('Hasło musi mieć od 12 do 200 znaków.');
+  // Database row lock grants exactly one request permission to write the Auth password.
+  const claim=await rpc<{userId:string;requestId:string;fresh:boolean}>('aco_claim_activation',{p_email:email,p_birth_date:body.birthDate,p_request:body.requestId});
+  try{
+   if(claim.fresh){
+    await auth('/admin/users/'+claim.userId,'PUT',{password:body.password,email_confirm:true});
+   }else{
+    // Recovery after an uncertain result: prove the previously saved password.
+    // Never write a second password, even for the same request ID.
+    const session=await auth('/token?grant_type=password','POST',{email,password:body.password});
+    if(session.user?.id!==claim.userId)throw Error('Invalid activation identity');
+   }
+   await rpc('aco_complete_activation',{p_user:claim.userId,p_request:claim.requestId});
+  }catch{throw Error('Nie udało się dokończyć aktywacji. Spróbuj ponownie z tym samym hasłem. Jeśli problem pozostanie, skontaktuj się z administratorem.');}
   return {ok:true};
  }
  const command=parseRegistration(body.command),email=command.email.trim().toLowerCase();
@@ -82,8 +94,3 @@ export async function trainerAction(db:Database,body:any,userId:string,services:
  return next;
 }
 
-export function finishActivation(db:Database,userId:string){
- const me=db.accounts.find(a=>a.id===userId&&!a.disabled),client=db.clients.find(c=>c.id===me?.clientId);
- if(me?.role!=='client'||!client?.invited||!client.prescribed)throw Error('Konto oczekuje na zatwierdzenie konsultacji.');
- return execute(db,actorFor(me),{type:'acceptInvite',id:client.id}) as Database;
-}
