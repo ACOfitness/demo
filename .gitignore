@@ -12,3 +12,5 @@ tmp/
 tooling/**/node_modules/
 panel.html
 demo-offline.html
+
+**/node_modules

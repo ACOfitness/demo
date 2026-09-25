@@ -10,7 +10,7 @@ z zapisem lokalnym. Sesja Auth jest przechowywana w sessionStorage.
 
 - `pnpm install --frozen-lockfile`
 - `pnpm test` — reguły biznesowe, filtrowanie danych, autoryzacja HTTP
-- `pnpm --dir tooling/migration install --frozen-lockfile`
+- `pnpm --dir tooling/migration install --ignore-workspace --frozen-lockfile`
 - `pnpm run test:database` — RLS, transakcje, konflikty rezerwacji, aktywacja
 - `pnpm build` — kontrola TypeScript i statyczna strona
 - `pnpm run build:server` — samodzielny plik funkcji Edge
