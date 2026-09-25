@@ -67,7 +67,7 @@ export function applyCommand(source:Database,userId:string,input:unknown,serverN
   if(me.role!=='admin')throw Error('Opłatę potwierdza administrator.');
   const session=db.sessions.find(s=>s.id===cmd.id&&s.kind==='consultation');
   if(!session||db.sales.some(s=>s.id==='consultation:'+session.id))throw Error('Konsultacja została już rozliczona lub nie istnieje.');
-  db.sales.push({id:'consultation:'+session.id,clientId:session.clientId,label:'Konsultacja',amount:session.consultationPrice??db.settings.consultation,date:db.now,status:'paid'});
+  db.sales.push({id:'consultation:'+session.id,sessionId:session.id,clientId:session.clientId,label:'Konsultacja',amount:session.consultationPrice??db.settings.consultation,date:db.now,status:'paid'});
   return db;
  }
  if(cmd.type==='payHold')cmd.code=cmd.code||db.holds.find(h=>h.id===cmd.id)?.paymentRequest?.code;

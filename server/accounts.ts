@@ -2,7 +2,7 @@ import {registerAccount,addTrainer,validBirthDate,type Database} from '../src/au
 import {actorFor} from '../src/auth';
 import {execute,available,rules,dayAdd,dateOf} from '../src/domain';
 import {parseRegistration,parseTrainer} from './commands';
-import {changes,decode,type Snapshot} from './store';
+import {relationalCommitArgs,decodeRelational as decode,type RelationalSnapshot as Snapshot} from './relational-store';
 import {publicState,projectState} from './access';
 export interface AccountServices {
  rpc<T>(name:string,args:Record<string,unknown>):Promise<T>;
@@ -15,7 +15,8 @@ export async function publicAction(body:any,req:Request,services:AccountServices
  const ip=req.headers.get('x-forwarded-for')?.split(',').at(-1)?.trim()||'unknown';
  const limit=body.action==='publicState'?120:5;
  if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash(body.action+':'+ip),p_max:limit,p_seconds:body.action==='publicState'?60:3600}))throw Error('Zbyt wiele prób. Spróbuj ponownie później.');
- let snapshot=await rpc<Snapshot>('aco_runtime_system_load',{}),db=decode(snapshot);
+ const lookupEmail=body.action==='register'?parseRegistration(body.command).email:body.action==='activation'&&typeof body.email==='string'?body.email:null;
+ let snapshot=await rpc<Snapshot>('aco_relational_public_load',{p_email:lookupEmail}),db=decode(snapshot);
  if(body.action==='publicState')return {accountId:'',revision:snapshot.revision,db:publicState(db)};
  if(body.action==='activation'){
   if(typeof body.email!=='string'||body.email.length>254||typeof body.birthDate!=='string')throw Error('Uzupełnij e-mail i datę urodzenia.');
@@ -42,15 +43,15 @@ export async function publicAction(body:any,req:Request,services:AccountServices
  let committed=false;
  try{
   for(let attempt=0;attempt<3;attempt++){
-   if(attempt){snapshot=await rpc<Snapshot>('aco_runtime_system_load',{});db=decode(snapshot)}
+   if(attempt){snapshot=await rpc<Snapshot>('aco_relational_public_load',{p_email:email});db=decode(snapshot)}
    const result=await registerAccount(db,command),next=result.db,client=next.clients.at(-1)!;
    const account=next.accounts.find(a=>a.clientId===client.id)!;account.id=userId;
    // Until a payment provider is integrated, registration never fabricates a paid sale.
    for(const session of next.sessions)if(session.clientId===client.id&&session.kind==='consultation')session.consultationPrice=db.settings.consultation;
    next.sales=next.sales.filter(s=>s.clientId!==client.id);
-   const delta=changes(db,next);
+   const delta=relationalCommitArgs(db,next,userId,'register');
    try{
-    await rpc('aco_runtime_commit',{p_actor:userId,p_session:null,p_request:body.requestId,p_revision:snapshot.revision,p_hash:await hash(JSON.stringify(command)),p_changes:delta.changes,p_removed:delta.removed,p_action:'register'});
+    await rpc('aco_relational_commit',{p_actor:userId,p_session:null,p_request:body.requestId,p_hash:await hash(JSON.stringify(command)),...delta});
     committed=true;return {ok:true};
    }catch(error){if((error as {code?:string}).code==='40001'&&attempt<2)continue;throw error}
   }

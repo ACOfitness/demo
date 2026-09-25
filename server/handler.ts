@@ -3,7 +3,7 @@ import {canSee} from '../src/domain';
 import {publicAction,trainerAction,finishActivation} from './accounts';
 import {applyCommand} from './commands';
 import {identityAccount,projectState,publicState} from './access';
-import {changes,decode,type Snapshot} from './store';
+import {relationalCommitArgs,decodeRelational as decode,type RelationalSnapshot as Snapshot} from './relational-store';
 
 interface Config {url:string;serviceKey:string;origins:string[]}
 interface Identity {id:string;sessionId:string;email?:string}
@@ -68,14 +68,14 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
     return 'ACO!'+Array.from(new Uint8Array(signed),b=>b.toString(16).padStart(2,'0')).join('').slice(0,32);
    };
    for(let attempt=0;attempt<3;attempt++){
-    const snapshot=await rpc<Snapshot&{receipt?:{hash:string;revision:number}}>('aco_runtime_load',args),db=decode(snapshot);
+    const snapshot=await rpc<Snapshot&{receipt?:{hash:string;revision:number}}>('aco_relational_load',args),db=decode(snapshot);
     let me;try{me=body.action==='finishActivation'?db.accounts.find(a=>a.id===identity.id&&!a.disabled):identityAccount(db,identity.id)}catch{throw new ApiError(403,'Konto nie jest aktywne lub dostęp został odebrany.');}
     if(!me)throw new ApiError(403,'Brak dostępu do konta.');
     if(identity.email&&identity.email!==me.email){
      const synced=structuredClone(db),account=synced.accounts.find(a=>a.id===me.id)!;account.email=identity.email;
      const client=synced.clients.find(c=>c.id===me.clientId);if(client)client.email=identity.email;
-     const delta=changes(db,synced);
-     try{await rpc('aco_runtime_commit',{...args,p_request:crypto.randomUUID(),p_revision:snapshot.revision,p_hash:await hash('verified-email:'+identity.email),p_changes:delta.changes,p_removed:[],p_action:'emailVerified'})}catch(error){if(!(error instanceof ApiError&&error.code==='40001'))throw error}
+     const delta=relationalCommitArgs(db,synced,me.id,'emailVerified');
+     try{await rpc('aco_relational_commit',{...args,...delta,p_request:crypto.randomUUID(),p_hash:await hash('verified-email:'+identity.email)})}catch(error){if(!(error instanceof ApiError&&error.code==='40001'))throw error}
      continue;
     }
     if(me.role!==snapshot.role)throw new ApiError(403,'Nieprawidłowe uprawnienia konta.');
@@ -126,9 +126,9 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
       next.accounts.find(a=>a.id===me.id)!.mustChangePassword=false;
      }else throw Error('Nieznana operacja.');
     }catch(error){throw error instanceof ApiError?error:new ApiError(422,error instanceof Error?error.message:'Nieprawidłowa operacja.')}
-    const delta=changes(db,next);
+    const delta=relationalCommitArgs(db,next,me.id,body.action==='command'?body.command.type:body.action);
     try{
-     const result=await rpc<{revision:number}>('aco_runtime_commit',{...args,p_revision:snapshot.revision,p_hash:requestHash,p_changes:delta.changes,p_removed:delta.removed,p_action:body.action==='command'?body.command.type:body.action});
+     const result=await rpc<{revision:number}>('aco_relational_commit',{...args,...delta,p_hash:requestHash});
      return reply({accountId:me.id,revision:result.revision,db:projectState(next,me.id),...extra});
     }catch(error){if(error instanceof ApiError&&error.code==='40001'&&attempt<2)continue;throw error}
    }
