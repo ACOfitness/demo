@@ -17,8 +17,8 @@ for(const account of source.accounts){await pg.query('insert into auth.users val
 const order=(await pg.query<{tables:string[]}>('select aco_private.relational_tables() tables')).rows[0].tables;
 for(const row of encodeRelational(source).sort((a,b)=>order.indexOf(a.table)-order.indexOf(b.table)))await pg.query('select aco_private.write_relational_row($1,$2,$3)',[row.table,row.key,row.data]);
 await pg.exec('set role service_role');
-const known=new Set(['aco_relational_load','aco_relational_commit','aco_relational_public_load','aco_rate_limit','aco_revoke_sessions']);
-let created=500,recoveries=0;
+const known=new Set(['aco_relational_load','aco_relational_commit','aco_relational_public_load','aco_rate_limit','aco_revoke_sessions','aco_claim_activation','aco_complete_activation']);
+let created=500,recoveries=0,passwordWrites=0,failCompletion=false;const passwords=new Map<string,string>();
 const fetcher:typeof fetch=async(input,init)=>{
  const url=new URL(String(input));
  if(url.pathname==='/auth/v1/user'&&init?.method!=='PUT'){
@@ -30,8 +30,15 @@ const fetcher:typeof fetch=async(input,init)=>{
   const newId=id(created++);await pg.exec('reset role');await pg.query('insert into auth.users values($1)',[newId]);await pg.exec('set role service_role');return Response.json({id:newId});
  }
  if(url.pathname==='/auth/v1/recover'){recoveries++;return Response.json({})}
- if(url.pathname==='/auth/v1/token'||url.pathname==='/auth/v1/user'&&init?.method==='PUT'||url.pathname.startsWith('/auth/v1/admin/users/'))return Response.json({});
- const name=url.pathname.split('/').at(-1)!;assert.ok(known.has(name));
+ if(url.pathname.startsWith('/auth/v1/admin/users/')&&init?.method==='PUT'){
+  const body=JSON.parse(String(init.body));if(body.password){passwordWrites++;passwords.set(url.pathname.split('/').at(-1)!,body.password)}return Response.json({});
+ }
+ if(url.pathname==='/auth/v1/token'){
+  const body=JSON.parse(String(init?.body));const account=(await pg.query<any>('select a.id from public.aco_accounts a join public.aco_profiles p on p.id=a.profile_id where p.email=$1',[body.email])).rows[0];
+  return account&&passwords.get(account.id)===body.password?Response.json({user:{id:account.id}}):Response.json({error:'invalid password'},{status:400});
+ }
+ if(''===url.pathname||url.pathname==='/auth/v1/user'&&init?.method==='PUT'||url.pathname.startsWith('/auth/v1/admin/users/'))return Response.json({});
+ const name=url.pathname.split('/').at(-1)!;assert.ok(known.has(name));if(name==='aco_complete_activation'&&failCompletion){failCompletion=false;throw new TypeError('Test network failure')}
  const values=JSON.parse(String(init?.body)),keys=Object.keys(values);assert.ok(keys.every(k=>/^p_[a-z_]+$/.test(k)));
  try{const result=await pg.query<{value:unknown}>(`select public.${name}(${keys.map((k,i)=>`${k} => $${i+1}`).join(',')}) value`,Object.entries(values).map(([k,v])=>['p_clients','p_trainers'].includes(k)?v:v&&typeof v==='object'?JSON.stringify(v):v));return Response.json(result.rows[0].value)}catch(error){return Response.json({code:(error as {code:string}).code,message:(error as Error).message},{status:400})}
 };
@@ -70,13 +77,28 @@ test('trainer cannot approve early, then approves consultation using server time
  await pg.query("update public.aco_sessions set starts_at=($1::date+time '11:00') at time zone 'Europe/Warsaw',ends_at=($1::date+time '12:30') at time zone 'Europe/Warsaw' where client_id=$2",[dayAdd(dateOf(new Date()),-1),registeredClient]);
  assert.equal((await handle(request(3,{action:'command',requestId:id(802),command}))).status,200);
 });
-test('birth date alone cannot activate; activation request only sends ownership link',async()=>{
- const call=(birthDate:string)=>handle(new Request('https://project.supabase.co/functions/v1/aco-api',{method:'POST',headers:{Origin:'https://acofitness.github.io'},body:JSON.stringify({action:'activation',email:'new@example.test',birthDate})}));
- assert.equal((await call('1980-01-01')).status,200);assert.equal(recoveries,0);
- assert.equal((await call('1990-01-01')).status,200);assert.equal(recoveries,1);
+test('direct activation verifies approval, never emails and cannot overwrite credentials on retry',async()=>{
+ const call=(birthDate:string,password?:string)=>handle(new Request('https://project.supabase.co/functions/v1/aco-api',{method:'POST',headers:{Origin:'https://acofitness.github.io'},body:JSON.stringify({action:'activation',email:'new@example.test',birthDate,...(password?{password,requestId:crypto.randomUUID()}:{})})}));
+ assert.equal((await call('1980-01-01')).status,422);assert.equal(recoveries,0);
+ assert.equal((await call('1990-01-01')).status,200);assert.equal(recoveries,0);
  assert.equal((await handle(request(500,{action:'state'}))).status,403);
- const activated=await handle(request(500,{action:'finishActivation',requestId:id(803),password:'A-new-password-123!'}));assert.equal(activated.status,200,JSON.stringify(await activated.json()));
- const state=await handle(request(500,{action:'state'}));assert.equal(state.status,200);const data=await state.json();assert.equal(data.db.clients.length,1);assert.equal(data.db.clients[0].active,true);assert.deepEqual(data.db.messages.map((m:any)=>m.title),['Witamy w ACO!']);
+ failCompletion=true;
+ assert.equal((await call('1990-01-01','A-new-password-123!')).status,422);
+ assert.equal(passwordWrites,1);
+ assert.equal((await call('1990-01-01','Another-password-456!')).status,422);assert.equal(passwordWrites,1);
+ const activated=await call('1990-01-01','A-new-password-123!');assert.equal(activated.status,200,JSON.stringify(await activated.json()));assert.equal(passwordWrites,1);
+ await pg.exec('reset role');await pg.query('insert into auth.sessions values($1,$2,null)',[id(600),id(500)]);await pg.exec('set role service_role');
+ const state=await handle(request(500,{action:'state'}));assert.equal(state.status,200);const data=await state.json();assert.equal(data.db.clients[0].active,true);assert.deepEqual(data.db.messages.map((m:any)=>m.title),['Witamy w ACO!']);
+ await pg.query('delete from aco_private.request_limits');
+ assert.equal((await call('1990-01-01','Overwrite-password-789!')).status,422);assert.equal(passwordWrites,1);
+ assert.equal((await handle(request(500,{action:'finishActivation',requestId:id(803),password:'Not-allowed-123!'}))).status,400);
+});
+test('activation claims serialize concurrent requests and are not callable by browser roles',async()=>{
+ await pg.query("update public.aco_clients set status='approved' where id=$1",[id(1)]);
+ const claim=()=>pg.query<any>('select public.aco_claim_activation($1,$2,$3) result',['one@example.test','1990-01-01',crypto.randomUUID()]);
+ const result=await Promise.all([claim(),claim()]);assert.equal(result.filter(r=>r.rows[0].result.fresh).length,1);assert.equal(result[0].rows[0].result.requestId,result[1].rows[0].result.requestId);
+ for(const role of ['anon','authenticated']){await pg.exec('reset role;set role '+role);await assert.rejects(claim(),/permission denied/);await assert.rejects(pg.query('select * from aco_private.direct_activations'),/permission denied/)}
+ await pg.exec('reset role;set role service_role');await pg.query("update public.aco_clients set status='active' where id=$1",[id(1)]);await pg.exec('reset role');await pg.query('insert into auth.sessions values($1,$2,null)',[id(101),id(1)]);await pg.exec('set role service_role');
 });
 test('administrator password reset revokes already-issued sessions',async()=>{
  const result=await handle(request(4,{action:'resetPassword',requestId:id(804),accountId:id(3)}));assert.equal(result.status,200,JSON.stringify(await result.clone().json()));const body=await result.json();assert.ok(body.temporary.length>=20);
