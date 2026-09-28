@@ -20,7 +20,7 @@ for(const account of source.accounts){await pg.query('insert into auth.users val
 const order=(await pg.query<{tables:string[]}>('select aco_private.relational_tables() tables')).rows[0].tables;
 for(const row of encodeRelational(source).sort((a,b)=>order.indexOf(a.table)-order.indexOf(b.table)))await pg.query('select aco_private.write_relational_row($1,$2,$3)',[row.table,row.key,row.data]);
 await pg.exec('set role service_role');
-const known=new Set(['aco_relational_load','aco_relational_commit','aco_relational_public_load','aco_rate_limit','aco_revoke_sessions','aco_claim_activation','aco_complete_activation']);
+const known=new Set(['aco_set_test_clock','aco_account_lifecycle','aco_relational_load','aco_relational_commit','aco_relational_public_load','aco_rate_limit','aco_revoke_sessions','aco_claim_activation','aco_complete_activation']);
 let created=500,recoveries=0,passwordWrites=0,failCompletion=false;const passwords=new Map<string,string>();
 const fetcher:typeof fetch=async(input,init)=>{
  const url=new URL(String(input));
@@ -133,4 +133,49 @@ test('revocation rejects old sessions for reads and writes without Auth DELETE p
  await assert.rejects(pg.query('select public.aco_revoke_sessions($1)',[id(4)]),/permission denied/);
  }
  await pg.exec('reset role;set role service_role');
+});
+
+test('shared clock is admin-only, idempotent, and does not extend expired auth sessions',async()=>{
+ const real=Date.now(),target=new Date(real+2*86400000).toISOString(),body={action:'testClock',requestId:id(2001),target};
+ assert.equal((await handle(request(1,body))).status,403);
+ const shifted=await handle(request(4,body));assert.equal(shifted.status,200,JSON.stringify(await shifted.clone().json()));const state=await shifted.json();assert.ok(Math.abs(Date.parse(state.db.now)-Date.parse(target))<5000);assert.ok(state.db.timeOffsetSeconds>172790);
+ const replay=await handle(request(4,body));assert.equal(replay.status,200);
+ const same=(await handle(request(1,{action:'state'})));assert.equal(same.status,200);assert.ok(Math.abs(Date.parse((await same.json()).db.now)-Date.parse(target))<5000);
+ await pg.exec('reset role');await pg.query("insert into auth.sessions values($1,$2,now()-interval '1 hour')",[id(2999),id(1)]);await pg.exec('set role service_role');
+ await assert.rejects(pg.query('select aco_private.relational_session($1,$2)',[id(1),id(2999)]),/revoked/);
+ assert.equal((await handle(request(4,{action:'testClock',requestId:id(2002),target:null}))).status,200);
+ for(const role of ['anon','authenticated']){await pg.exec('reset role;set role '+role);await assert.rejects(pg.query('select * from aco_private.test_clock'),/permission denied/)}await pg.exec('reset role;set role service_role');
+});
+test('archival preserves history and rejects every old session; permanent deletion removes typed data',async()=>{
+ const body={action:'accountLifecycle',requestId:id(2010),accountId:id(500),mode:'archive',confirmation:''};
+ assert.equal((await handle(request(1,body))).status,403);
+ assert.equal((await handle(request(4,{...body,accountId:id(3)}))).status,422);
+ const archived=await handle(request(4,body));assert.equal(archived.status,200,JSON.stringify(await archived.clone().json()));
+ assert.equal((await handle(request(500,{action:'state'}))).status,403);
+ assert.equal((await pg.query<any>('select count(*)::int n from public.aco_sessions where client_id=$1',[registeredClient])).rows[0].n,1);
+ const denied=await handle(request(4,{...body,requestId:id(2011),mode:'purge'}));assert.equal(denied.status,422);
+ const purged=await handle(request(4,{...body,requestId:id(2012),mode:'purge',confirmation:'USUŃ'}));assert.equal(purged.status,200,JSON.stringify(await purged.clone().json()));
+ assert.equal((await pg.query<any>('select count(*)::int n from public.aco_profiles where id=$1',[registeredClient])).rows[0].n,0);
+ assert.equal((await pg.query<any>('select count(*)::int n from public.aco_sessions where client_id=$1',[registeredClient])).rows[0].n,0);
+ const replay=await handle(request(4,{...body,requestId:id(2012),mode:'purge',confirmation:'USUŃ'}));assert.equal(replay.status,200);
+});
+test('permanent trainer removal leaves other trainers and clients intact',async()=>{
+ const trainerId=id(3000);await pg.exec('reset role');await pg.query('insert into auth.users values($1)',[trainerId]);await pg.exec('set role service_role');
+ await pg.query("insert into public.aco_profiles(id,auth_user_id,name,email) values($1,$1,'Disposable trainer','disposable@example.test')",[trainerId]);
+ await pg.query("insert into public.aco_accounts(id,profile_id,role) values($1,$1,'trainer')",[trainerId]);await pg.query('insert into public.aco_trainers(id) values($1)',[trainerId]);
+ await pg.query("insert into public.aco_earnings(id,trainer_id,kind,hours,rate_grosz,amount_grosz,month,description) values($1,$2,'company',2,5000,10000,'2026-09-01','Test')",[id(3001),trainerId]);
+ const response=await handle(request(4,{action:'accountLifecycle',requestId:id(3002),accountId:trainerId,mode:'purge',confirmation:'USUŃ'}));assert.equal(response.status,200,JSON.stringify(await response.clone().json()));
+ assert.equal((await pg.query<any>('select count(*)::int n from public.aco_trainers where id=$1',[trainerId])).rows[0].n,0);
+ assert.equal((await pg.query<any>('select count(*)::int n from public.aco_clients')).rows[0].n,2);
+ assert.equal((await pg.query<any>('select count(*)::int n from public.aco_earnings where trainer_id=$1',[trainerId])).rows[0].n,0);
+});
+test('individual plans, trainer details and flat consultation rates persist as typed rows',async()=>{
+ const proposal={type:'individualPlan',clientId:id(1),plan:{service:'personal',intensity:4,cycleWeeks:4,validWeeks:6,price:1700}};
+ const result=await handle(request(4,{action:'command',requestId:id(3010),command:proposal}));assert.equal(result.status,200,JSON.stringify(await result.clone().json()));
+ const client=await handle(request(1,{action:'state'}));assert.equal((await client.json()).db.clients[0].individualPlan.price,1700);
+ const record=(await pg.query<any>('select * from public.aco_individual_plans where client_id=$1',[id(1)])).rows[0];assert.equal(record.price_grosz,170000);assert.equal(record.intensity,4);
+ const {encodeRelational,decodeRelational}=await import('../../server/relational-store');
+ const snapshot=(await pg.query<any>('select public.aco_relational_load($1,$2) result',[id(4),id(104)])).rows[0].result;
+ const db=decodeRelational(snapshot);db.trainers[0].description='Public trainer description';db.trainers[0].consultationRate=135;db.trainers[0].consultationRateHistory=[{from:'2026-01-01',rate:135}];
+ const roundtrip=decodeRelational({...snapshot,rows:encodeRelational(db)});assert.equal(roundtrip.trainers[0].consultationRate,135);assert.equal(roundtrip.trainers[0].description,'Public trainer description');assert.equal(roundtrip.trainers[0].consultationRateHistory?.[0].rate,135);
 });
