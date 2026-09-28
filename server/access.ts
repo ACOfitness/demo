@@ -15,7 +15,7 @@ export function identityAccount(db:Database, userId:string):Account {
 /** Explicit allowlists: future fields must never silently become client-visible. */
 function safeAccount(a:Account, own:boolean):Account {
  return {id:a.id,role:a.role,email:a.email,name:a.name,phone:own?a.phone:undefined,
- photo:a.photo,trainerId:a.trainerId,clientId:a.clientId,
+ disabled:a.disabled,photo:a.photo,trainerId:a.trainerId,clientId:a.clientId,
  ...(own?{mustChangePassword:!!a.mustChangePassword}: {})};
 }
 
@@ -31,17 +31,17 @@ export function projectState(source:Database,userId:string):Database {
  const letters=(source.letters||[]).filter(m=>m.from===me.id||m.to===me.id);
  const contacts=new Set([me.id,...recipients(source,actor).map(a=>a.id)]);
  for(const m of letters){contacts.add(m.from);contacts.add(m.to)}
- const out:Database={version:1,now:source.now,
- accounts:source.accounts.filter(a=>contacts.has(a.id)).map(a=>safeAccount(a,a.id===me.id)),
+ const out:Database={version:1,now:source.now,timeOffsetSeconds:source.timeOffsetSeconds,clockVersion:source.clockVersion,testToolsEnabled:admin&&source.testToolsEnabled,
+ accounts:source.accounts.filter(a=>admin||contacts.has(a.id)).map(a=>safeAccount(a,a.id===me.id)),
  clients:source.clients.filter(c=>managed.has(c.id)||historical.has(c.id)).map(c=>managed.has(c.id)?{
- id:c.id,name:c.name,email:c.email,birthDate:c.birthDate,phone:c.phone,trainerId:c.trainerId,
- active:c.active,invited:c.invited,service:c.service,intensity:c.intensity,prescribed:c.prescribed,answers:[...c.answers],photo:c.photo
+ id:c.id,archived:c.archived,name:c.name,email:c.email,birthDate:c.birthDate,phone:c.phone,trainerId:c.trainerId,
+ individualPlan:c.individualPlan,planProposal:admin||me.role==='trainer'?c.planProposal:undefined,active:c.active,invited:c.invited,service:c.service,intensity:c.intensity,prescribed:c.prescribed,answers:[...c.answers],photo:c.photo
  }:{id:c.id,name:c.name,email:'',phone:'',trainerId:'',active:false,invited:false,service:c.service,intensity:0,prescribed:false,answers:[]}),
  trainers:source.trainers.filter(t=>admin||trainers.has(t.id)||!t.deleted).map(t=>{
  const own=admin||t.id===me.trainerId;
- return {id:t.id,name:t.name,photo:t.photo,deleted:t.deleted,products:t.products,
+ return {id:t.id,name:t.name,photo:t.photo,description:t.description,locationId:t.locationId,deleted:t.deleted,products:t.products,
  days:[...t.days],hours:[...t.hours],weeklyHours:structuredClone(t.weeklyHours),rate:own?t.rate:0,
- ...(own?{productRates:structuredClone(t.productRates),productRateHistory:structuredClone(t.productRateHistory),rates:structuredClone(t.rates),phone:t.phone,pesel:t.pesel,student:t.student,address:t.address,taxOffice:t.taxOffice}:{})};
+ ...(own?{consultationRate:t.consultationRate,consultationRateHistory:structuredClone(t.consultationRateHistory),productRates:structuredClone(t.productRates),productRateHistory:structuredClone(t.productRateHistory),rates:structuredClone(t.rates),phone:t.phone,pesel:t.pesel,student:t.student,address:t.address,taxOffice:t.taxOffice}:{})};
  }),
  sessions:sessions.map(s=>({id:s.id,clientId:s.clientId,trainerId:s.trainerId,packageId:s.packageId,date:s.date,hour:s.hour,kind:s.kind,status:s.status,
  locationId:s.locationId,consultationPrice:s.consultationPrice,publicNote:s.publicNote,privateNote:me.role==='client'?'':s.privateNote,
@@ -67,7 +67,7 @@ export function projectState(source:Database,userId:string):Database {
 /** Anonymous consultation picker: names/products and occupied slots only. */
 export function publicState(source:Database):Database {
  return {version:1,now:source.now,accounts:[],clients:[],sessions:[],packages:[],holds:[],messages:[],sales:[],substitutions:[],audit:[],letters:[],
- trainers:source.trainers.filter(t=>!t.deleted).map(t=>({id:t.id,name:t.name,photo:t.photo,products:t.products,days:[...t.days],hours:[...t.hours],weeklyHours:structuredClone(t.weeklyHours),rate:0})),
+ trainers:source.trainers.filter(t=>!t.deleted).map(t=>({id:t.id,name:t.name,photo:t.photo,description:t.description,locationId:t.locationId,products:t.products,days:[...t.days],hours:[...t.hours],weeklyHours:structuredClone(t.weeklyHours),rate:0})),
  locations:structuredClone(source.locations),settings:structuredClone(source.settings),productCopies:structuredClone(source.productCopies),blocks:occupiedSlots(source,new Set())};
 }
 function occupiedSlots(source:Database,visibleSessions:Set<string>,visibleHolds=new Set<string>(),visibleClients=new Set<string>()){

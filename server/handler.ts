@@ -15,7 +15,7 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
  async function rpc<T>(name:string,args:Record<string,unknown>):Promise<T>{
   const result=await fetcher(config.url+'/rest/v1/rpc/'+name,{method:'POST',headers:{apikey:config.serviceKey,Authorization:'Bearer '+config.serviceKey,'Content-Type':'application/json'},body:JSON.stringify(args)});
   const data=await result.json();
-  if(!result.ok)throw new ApiError(data.code==='40001'?409:403,'Nie udało się zapisać operacji.',data.code);
+  if(!result.ok){const messages:Record<string,string>={'Test tools disabled':'Tryb testowy jest wyłączony.','Offset exceeds ten years':'Czas testowy można przesunąć maksymalnie o 10 lat.','Trainer still has clients or unsettled appointments':'Najpierw przenieś klientów i rozlicz wizyty trenera.','Existing client history must be preserved':'Ten trener ma historię istniejących klientów. Wybierz zachowanie historii.','Clock changed; reload':'Czas systemu się zmienił. Spróbuj ponownie.'};throw new ApiError(data.code==='40001'?409:403,messages[data.message]||'Nie udało się zapisać operacji.',data.code);}
   return data as T;
  }
  async function auth(path:string,method:string,body?:unknown,token?:string){
@@ -51,7 +51,7 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
    while(true){const part=await reader.read();if(part.done)break;size+=part.value.byteLength;if(size>3000000){await reader.cancel();throw new ApiError(413,'Formularz jest zbyt duży.')}chunks.push(part.value)}
    const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length}
    let body;try{body=JSON.parse(new TextDecoder().decode(bytes))}catch{throw new ApiError(400,'Nieprawidłowy formularz.')}
-   const allowed:Record<string,string[]>={state:[],quote:['id','code'],command:['requestId','command'],publicState:[],register:['requestId','command'],activation:['email','birthDate','password','requestId'],trainer:['requestId','input'],resetPassword:['requestId','accountId'],changePassword:['requestId','oldPassword','password']};
+   const allowed:Record<string,string[]>={accountLifecycle:['requestId','accountId','mode','confirmation'],testClock:['requestId','target'],state:[],quote:['id','code'],command:['requestId','command'],publicState:[],register:['requestId','command'],activation:['email','birthDate','password','requestId'],trainer:['requestId','input'],resetPassword:['requestId','accountId'],changePassword:['requestId','oldPassword','password']};
    if(!body||typeof body!=='object'||Array.isArray(body)||!Object.hasOwn(allowed,body.action)||Object.keys(body).some(k=>k!=='action'&&!allowed[body.action].includes(k)))throw new ApiError(400,'Nieprawidłowe żądanie.');
    if(['publicState','register','activation'].includes(body.action)){
     if((body.action==='register'||body.action==='activation'&&body.password!==undefined)&&!uuid.test(body.requestId))throw new ApiError(400,'Brak identyfikatora operacji.');
@@ -83,10 +83,31 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
     if(body.action==='state')return reply({accountId:me.id,revision:snapshot.revision,db:{...publicState(db),accounts:[{id:me.id,role:me.role,email:me.email,trainerId:me.trainerId,clientId:me.clientId,mustChangePassword:true}]}});
      throw new ApiError(403,'Najpierw zmień hasło tymczasowe.');
     }
+    if(body.action==='accountLifecycle'||body.action==='testClock'){
+     if(me.role!=='admin')throw new ApiError(403,'Tylko administrator może wykonać tę operację.');
+     if(body.action==='testClock'){
+      if(body.target!==null&&(typeof body.target!=='string'||!Number.isFinite(Date.parse(body.target))))throw new ApiError(422,'Wybierz poprawną datę i godzinę.');
+      await rpc('aco_set_test_clock',{...args,p_hash:requestHash,p_target:body.target});
+     }else{
+      if(!uuid.test(body.accountId)||!['archive','purge'].includes(body.mode)||body.mode==='purge'&&body.confirmation!=='USUŃ')throw new ApiError(422,'Potwierdź sposób usunięcia konta.');
+      const target=db.accounts.find(a=>a.id===body.accountId);
+      if(target?.role==='admin'||target?.id===me.id)throw new ApiError(403,'Nie można usunąć konta administratora.');
+      if(target?.role==='trainer'&&(db.clients.some(c=>c.trainerId===target.trainerId)||db.sessions.some(s=>s.trainerId===target.trainerId&&s.status==='scheduled')||db.holds.some(h=>h.trainerId===target.trainerId&&h.status==='active'&&h.expires>db.now)))throw new ApiError(422,'Najpierw przenieś klientów i rozlicz lub przenieś wszystkie wizyty trenera.');
+      if(body.mode==='purge'&&target?.role==='trainer'&&db.sessions.some(s=>s.trainerId===target.trainerId))throw new ApiError(422,'Trener ma historię spotkań istniejących klientów. Wybierz zachowanie historii albo najpierw usuń te testowe konta klientów.');
+      const result=await rpc<{authUserId?:string}>('aco_account_lifecycle',{...args,p_hash:requestHash,p_target:body.accountId,p_mode:body.mode});
+      if(result.authUserId){
+       // Domain deletion disables access atomically. Auth cleanup is retryable even after a lost response.
+       const response=await fetcher(config.url+'/auth/v1/admin/users/'+result.authUserId,{method:'DELETE',headers:{apikey:config.serviceKey,Authorization:'Bearer '+config.serviceKey}});
+       if(!response.ok&&response.status!==404)throw new ApiError(503,'Konto zostało zablokowane. Usunięcie logowania nie powiodło się; ponów operację.');
+      }
+     }
+     const updated=await rpc<Snapshot>('aco_relational_load',{...args,p_request:null});
+     return reply({accountId:me.id,revision:updated.revision,db:projectState(decode(updated),me.id)});
+    }
     if(body.action==='quote'){
      const hold=db.holds.find(h=>h.id===body.id),client=db.clients.find(c=>c.id===hold?.clientId);
      if(!hold||!client||!canSee(db,{role:me.role,trainerId:me.trainerId||'',clientId:me.clientId||''},client)||typeof body.code!=='string'||body.code.length>100)throw new ApiError(403,'Brak dostępu do rezerwacji.');
-     try{const result=quote(db,hold.clientId,hold.service,hold.intensity,body.code);return reply({base:result.base,total:result.total,percent:result.percent})}catch(error){throw new ApiError(422,(error as Error).message)}
+     try{const result=quote(db,hold.clientId,hold.service,hold.intensity,body.code,hold.basePrice);return reply({base:result.base,total:result.total,percent:result.percent})}catch(error){throw new ApiError(422,(error as Error).message)}
     }
     if(body.action==='state')return reply({accountId:me.id,revision:snapshot.revision,db:projectState(db,me.id)});
     if(snapshot.receipt){if(snapshot.receipt.hash!==requestHash)throw new ApiError(409,'Identyfikator wykorzystano do innej operacji.');return reply({accountId:me.id,revision:snapshot.revision,db:projectState(db,me.id),replayed:true,...(body.action==='resetPassword'&&me.role==='admin'?{temporary:await temporaryPassword()}:{})})}
