@@ -27,3 +27,5 @@ button,input,textarea{font:inherit}button{cursor:pointer;transition:background .
 
 .store-layout{align-items:stretch}.store-details{display:flex;flex-direction:column;min-width:0}.store-details .current-package-card{flex:1}.store-hold-note{grid-column:1 / -1;margin-top:0}.store-layout .product-card{display:flex;flex-direction:column}.store-layout .product-card>.button:last-child{margin-top:auto}
 .removal-options{display:grid;gap:12px;margin-top:20px}.removal-option{display:flex;gap:14px;text-align:left;padding:18px;border:1px solid var(--line,#ddd);border-radius:14px;background:white;cursor:pointer}.removal-option.selected{border-color:#de603c;background:#fff5ee}.removal-option small{display:block;font-weight:400;margin-top:6px;line-height:1.5}.removal-option svg{flex-shrink:0}
+
+.date-step-label{margin:0;padding:12px 12px 2px;font-size:12px;font-weight:600;color:#a74532}
