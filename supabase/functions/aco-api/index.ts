@@ -1,3 +1,16 @@
+// src/holidays.ts
+function holidayName(date2) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date2)) return;
+  const year = Number(date2.slice(0, 4)), md = date2.slice(5);
+  const fixed = { "01-01": "Nowy Rok", "01-06": "Trzech Kr\xF3li", "05-01": "\u015Awi\u0119to Pracy", "05-03": "\u015Awi\u0119to Konstytucji 3 Maja", "08-15": "Wniebowzi\u0119cie NMP", "11-01": "Wszystkich \u015Awi\u0119tych", "11-11": "\u015Awi\u0119to Niepodleg\u0142o\u015Bci", "12-25": "Bo\u017Ce Narodzenie", "12-26": "Drugi dzie\u0144 Bo\u017Cego Narodzenia" };
+  if (fixed[md]) return fixed[md];
+  if (year >= 2025 && md === "12-24") return "Wigilia";
+  const a = year % 19, b = Math.floor(year / 100), c = year % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451), n = h + l - 7 * m + 114;
+  const easter = Date.UTC(year, Math.floor(n / 31) - 1, n % 31 + 1);
+  const delta = Math.round((Date.parse(date2 + "T00:00:00Z") - easter) / 864e5);
+  return { 0: "Wielkanoc", 1: "Poniedzia\u0142ek Wielkanocny", 49: "Zielone \u015Awi\u0105tki", 60: "Bo\u017Ce Cia\u0142o" }[delta];
+}
+
 // src/availability-model.ts
 function availabilityRanges(hours) {
   const ranges = [];
@@ -10,7 +23,7 @@ function availabilityRanges(hours) {
 }
 
 // src/domain.ts
-var defaultRules = { renewalDays: 7, cycleWeeks: 4, validWeeks: 6, coachHoldHours: 48, checkoutMinutes: 15, protectionDays: 1, consultationDays: 7, startDays: 14, substituteHours: 48, freezeDays: 7 };
+var defaultRules = { renewalDays: 7, cycleWeeks: 4, validWeeks: 6, coachHoldHours: 72, checkoutMinutes: 15, protectionDays: 1, consultationDays: 7, startDays: 14, substituteHours: 48, freezeDays: 7 };
 var rules = (db) => Object.fromEntries(Object.entries(defaultRules).map(([key, value]) => [key, db.settings.rules?.[key] ?? value]));
 var packagePrice = (db, service2, intensity) => db.settings.packagePrices?.[service2]?.[intensity] ?? db.settings[service2] * intensity * rules(db).cycleWeeks;
 var trainerHours = (t, day2) => t.weeklyHours ? t.weeklyHours[day2] || [] : t.days.includes(day2) ? t.hours : [];
@@ -48,14 +61,23 @@ var counts = (s) => s.status === "scheduled" || spends(s);
 var unbooked = (db, p) => Math.max(0, p.count - db.sessions.filter((s) => s.packageId === p.id && counts(s)).length);
 var currentPackage = (db, id2) => db.packages.filter((p) => p.clientId === id2).sort((a, b) => b.start.localeCompare(a.start))[0];
 var canSee = (db, a, c) => a.role === "admin" || a.role === "client" && a.clientId === c.id && c.active || a.role === "trainer" && (a.trainerId === c.trainerId || db.substitutions.some((s) => s.clientId === c.id && s.trainerId === a.trainerId && s.until > db.now));
-function available(db, trainerId, date2, hour2, clientId, exclude, ignoreHold) {
+function recurringOwner(db, trainerId, day2, hour2, clientId, ignoreHold) {
+  const today = dateOf(new Date(db.now));
+  if (db.recurringBusy?.some((s) => s.trainerId === trainerId && s.day === day2 && s.hour === hour2)) return "occupied";
+  const p = db.packages.find((p2) => p2.clientId !== clientId && !p2.frozen && p2.protectionUntil > today && db.clients.some((c) => c.id === p2.clientId && !c.archived && c.trainerId === trainerId) && p2.slots.some((s) => s.day === day2 && s.hour === hour2));
+  if (p) return p.clientId;
+  return db.holds.find((h) => h.id !== ignoreHold && h.clientId !== clientId && h.trainerId === trainerId && h.status === "active" && h.expires > db.now && h.slots.some((s) => s.day === day2 && s.hour === hour2))?.clientId;
+}
+function available(db, trainerId, date2, hour2, clientId, exclude, ignoreHold, holidayOverride = false) {
+  if (holidayName(date2) && !holidayOverride) return false;
   const t = db.trainers.find((t2) => t2.id === trainerId);
   const now = new Date(db.now);
   if (!Number.isFinite(+at(date2, hour2)) || !t || t.deleted || !trainerHours(t, dayIndex(date2)).includes(hour2) || +at(date2, hour2) <= +now) return false;
   if (db.blocks.some((b) => b.trainerId === trainerId && b.date === date2 && b.hour === hour2)) return false;
   if (db.sessions.some((s) => s.id !== exclude && s.date === date2 && (s.status === "scheduled" || s.kind === "consultation" && s.status === "completed" && endAt(s) > now) && (s.trainerId === trainerId || s.clientId === clientId) && hour2 >= s.hour && hour2 < s.hour + (s.kind === "consultation" ? 2 : 1))) return false;
   if (db.holds.some((h) => h.id !== ignoreHold && h.status === "active" && h.expires > db.now && (h.trainerId === trainerId || h.clientId === clientId) && h.dates.some((d) => d.date === date2 && d.hour === hour2))) return false;
-  if (db.packages.some((p) => p.clientId !== clientId && db.clients.find((c) => c.id === p.clientId)?.trainerId === trainerId && p.protectionUntil > dateOf(new Date(db.now)) && date2 >= p.start && p.slots.some((s) => s.day === dayIndex(date2) && s.hour === hour2) && !db.sessions.some((s) => s.packageId === p.id && (s.date === date2 && s.hour === hour2 && s.status.startsWith("cancelled") || s.original === `${date2} ${hourLabel(hour2)}`)))) return false;
+  if (db.holds.some((h) => h.id !== ignoreHold && h.clientId !== clientId && h.trainerId === trainerId && h.status === "active" && h.expires > db.now && date2 >= h.start && h.slots.some((s) => s.day === dayIndex(date2) && s.hour === hour2) && !h.dates.some((d) => d.original === `${date2} ${hourLabel(hour2)}`))) return false;
+  if (db.packages.some((p) => p.clientId !== clientId && !p.frozen && db.clients.find((c) => c.id === p.clientId)?.trainerId === trainerId && p.protectionUntil > dateOf(new Date(db.now)) && date2 >= p.start && p.slots.some((s) => s.day === dayIndex(date2) && s.hour === hour2) && !db.sessions.some((s) => s.packageId === p.id && (s.date === date2 && s.hour === hour2 && s.status.startsWith("cancelled") || s.original === `${date2} ${hourLabel(hour2)}`)))) return false;
   return true;
 }
 function notify(db, title, body, clientId) {
@@ -95,16 +117,26 @@ function limitCheck(db, c, date2, exclude, extra = [], ignoreHold) {
   const n = db.sessions.filter((s) => s.id !== exclude && s.clientId === c.id && s.kind === "training" && weekOf(s.date) === weekOf(date2) && counts(s)).length + db.holds.filter((h) => h.id !== ignoreHold && h.clientId === c.id && h.status === "active" && h.expires > db.now).flatMap((h) => h.dates).filter((d) => weekOf(d.date) === weekOf(date2)).length + extra.filter((d) => weekOf(d.date) === weekOf(date2)).length;
   if (n >= c.intensity) throw Error(`Limit ${c.intensity} trening\xF3w w tygodniu zosta\u0142 wykorzystany. Wybierz inny tydzie\u0144.`);
 }
+function invalidatePendingPlan(db, clientId) {
+  for (const h of db.holds) if (h.clientId === clientId && h.status === "active") {
+    h.status = "expired";
+    notify(db, "Wybierz terminy nowego planu", "Zmieniono warunki nieop\u0142aconego pakietu. Wybierz terminy ponownie.", clientId);
+  }
+}
 function execute(source, a, cmd) {
   const db = structuredClone(source);
   const now = new Date(db.now);
-  if (["productCopy", "promotion", "disablePromotion", "extraHours"].includes(cmd.type)) return business(db, a, cmd);
+  if (["productCopy", "promotion", "disablePromotion", "extraHours", "editExtraHours", "deleteExtraHours", "settleExtraHours", "correctExtraHours"].includes(cmd.type)) return business(db, a, cmd);
   db.holds.forEach((h) => {
     if (h.status === "active" && h.expires <= db.now) h.status = "expired";
   });
   if ("ignoreLimits" in cmd && cmd.ignoreLimits) {
     requireStaff(a);
     audit(db, "Pomini\u0119to dzienny i tygodniowy limit trening\xF3w: " + cmd.type);
+  }
+  if ("holidayOverride" in cmd && cmd.holidayOverride) {
+    requireAdmin(a);
+    audit(db, "Administrator dopu\u015Bci\u0142 termin w \u015Bwi\u0119to: " + cmd.type);
   }
   switch (cmd.type) {
     case "confirmConsultation": {
@@ -113,6 +145,17 @@ function execute(source, a, cmd) {
       if (!s) throw Error("Brak konsultacji.");
       if (db.sales.some((v) => v.sessionId === s.id || v.id === "consultation:" + s.id)) throw Error("Wp\u0142ata jest ju\u017C rozliczona.");
       db.sales.push({ id: "consultation:" + s.id, sessionId: s.id, clientId: s.clientId, label: "Konsultacja", amount: s.consultationPrice ?? db.settings.consultation, date: db.now, status: "paid" });
+      break;
+    }
+    case "standardPlan": {
+      requireAdmin(a);
+      const c = db.clients.find((c2) => c2.id === cmd.clientId);
+      if (!c || ![1, 2, 3].includes(cmd.intensity)) throw Error("Wybierz standardow\u0105 intensywno\u015B\u0107.");
+      delete c.individualPlan;
+      delete c.planProposal;
+      c.intensity = cmd.intensity;
+      invalidatePendingPlan(db, c.id);
+      audit(db, "Przywr\xF3cono standardowy plan: " + c.name);
       break;
     }
     case "individualPlan": {
@@ -126,6 +169,7 @@ function execute(source, a, cmd) {
       if (!Number.isInteger(p.intensity) || p.intensity < 1 || p.intensity > 7 || !Number.isInteger(p.cycleWeeks) || p.cycleWeeks < 1 || p.cycleWeeks > 52 || !Number.isInteger(p.validWeeks) || p.validWeeks < p.cycleWeeks || p.validWeeks > 104 || a.role === "admin" && (!Number.isFinite(p.price) || !p.price || p.price <= 0)) throw Error("Sprawd\u017A cz\u0119stotliwo\u015B\u0107 (1-7), cykl (1-52 tygodnie), wa\u017Cno\u015B\u0107 i cen\u0119.");
       const proposal = { ...p, price: a.role === "admin" ? p.price : 0, status: a.role === "admin" ? "approved" : "pending", proposedBy: a.trainerId || "admin", proposedAt: db.now, ...a.role === "admin" ? { approvedAt: db.now } : {} };
       if (a.role === "admin") {
+        invalidatePendingPlan(db, c.id);
         c.individualPlan = proposal;
         delete c.planProposal;
       } else c.planProposal = proposal;
@@ -139,6 +183,7 @@ function execute(source, a, cmd) {
       if (!c?.planProposal || c.planProposal.status !== "pending") throw Error("Nie ma propozycji do zatwierdzenia.");
       if (cmd.approve) {
         if (!Number.isFinite(cmd.price) || !cmd.price || cmd.price <= 0) throw Error("Ustal dodatni\u0105 cen\u0119 pakietu przed zatwierdzeniem.");
+        invalidatePendingPlan(db, c.id);
         c.individualPlan = { ...c.planProposal, price: cmd.price, status: "approved", approvedAt: db.now };
         delete c.planProposal;
       } else c.planProposal.status = "rejected";
@@ -203,15 +248,18 @@ function execute(source, a, cmd) {
       break;
     }
     case "reschedule": {
+      const originalSession = db.sessions.find((s2) => s2.id === cmd.id);
+      if (originalSession?.date === cmd.date && originalSession.hour === cmd.hour) throw Error("Wybierz termin inny ni\u017C obecny.");
       const s = getSession(db, a, cmd.id);
       if (s.kind === "consultation") {
         requireAdmin(a);
         if (s.status !== "scheduled" || at(s.date, s.hour) <= now) throw Error("Mo\u017Cna zmieni\u0107 tylko przysz\u0142\u0105 konsultacj\u0119.");
-        if (!available(db, s.trainerId, cmd.date, cmd.hour, s.clientId, s.id) || !available(db, s.trainerId, cmd.date, cmd.hour + 1, s.clientId, s.id)) throw Error("Konsultacja wymaga dw\xF3ch wolnych godzin.");
+        if (!available(db, s.trainerId, cmd.date, cmd.hour, s.clientId, s.id, void 0, cmd.holidayOverride) || !available(db, s.trainerId, cmd.date, cmd.hour + 1, s.clientId, s.id, void 0, cmd.holidayOverride)) throw Error("Konsultacja wymaga dw\xF3ch wolnych godzin.");
         s.original = s.original || `${s.date} ${hourLabel(s.hour)}`;
         s.date = cmd.date;
         s.hour = cmd.hour;
         s.ignoreLimits = !!cmd.ignoreLimits;
+        s.holidayOverride = !!cmd.holidayOverride;
         notify(db, "Zmieniono konsultacj\u0119", `${labelDate(s.date)}, ${hourLabel(s.hour)}`, s.clientId);
         break;
       }
@@ -219,12 +267,13 @@ function execute(source, a, cmd) {
       if (+at(s.date, s.hour) - +now < db.settings.cancelHours * 36e5) throw Error(`Zosta\u0142o mniej ni\u017C ${db.settings.cancelHours} h. Odwo\u0142aj sesj\u0119 (wej\u015Bcie przepadnie), a now\u0105 um\xF3w z wolnego wej\u015Bcia.`);
       const p = db.packages.find((p2) => p2.id === s.packageId);
       if (cmd.date < p.start || cmd.date >= p.validUntil || p.frozen) throw Error("Termin jest poza wa\u017Cno\u015Bci\u0105 pakietu albo pakiet jest zamro\u017Cony.");
-      if (!available(db, s.trainerId, cmd.date, cmd.hour, s.clientId, s.id)) throw Error("Ten termin jest niedost\u0119pny.");
+      if (!available(db, s.trainerId, cmd.date, cmd.hour, s.clientId, s.id, void 0, cmd.holidayOverride)) throw Error("Ten termin jest niedost\u0119pny.");
       if (!cmd.ignoreLimits) limitCheck(db, { ...db.clients.find((c) => c.id === s.clientId), intensity: p.intensity }, cmd.date, s.id);
       s.original = s.original || `${s.date} ${hourLabel(s.hour)}`;
       s.date = cmd.date;
       s.hour = cmd.hour;
       s.ignoreLimits = !!cmd.ignoreLimits;
+      s.holidayOverride = !!cmd.holidayOverride;
       notify(db, "Zmieniono termin treningu", `Nowy termin: ${labelDate(s.date)}, ${hourLabel(s.hour)}.`, s.clientId);
       audit(db, `Prze\u0142o\u017Cono sesj\u0119 ${s.id}`);
       break;
@@ -305,13 +354,14 @@ function execute(source, a, cmd) {
       if (db.packages.some((p) => p.clientId === c.id && cmd.start < p.cycleEnd && dayAdd(cmd.start, terms.cycleWeeks * 7) > p.start)) throw Error("Nowy cykl nie mo\u017Ce nak\u0142ada\u0107 si\u0119 na obecny.");
       if (db.holds.some((h) => h.clientId === c.id && h.status === "active" && h.expires > db.now)) throw Error("Ten klient ma ju\u017C rezerwacj\u0119 wst\u0119pn\u0105.");
       for (const slot of cmd.slots) {
+        if (recurringOwner(db, c.trainerId, slot.day, slot.hour, c.id)) throw Error("Ta sta\u0142a godzina jest przypisana innemu klientowi. Wybierz inn\u0105.");
         const occurrences = Array.from({ length: terms.cycleWeeks }, (_, w) => dayAdd(cmd.start, (slot.day - dayIndex(cmd.start) + 7) % 7 + w * 7));
-        if (occurrences.filter((d) => !available(db, c.trainerId, d, slot.hour, c.id)).length > terms.cycleWeeks / 2) throw Error("Ponad po\u0142owa termin\xF3w tej sta\u0142ej godziny jest zaj\u0119ta. Wybierz inn\u0105 godzin\u0119.");
+        if (occurrences.filter((d) => !available(db, c.trainerId, d, slot.hour, c.id, void 0, void 0, cmd.holidayOverride)).length > terms.cycleWeeks / 2) throw Error("Ponad po\u0142owa termin\xF3w tej sta\u0142ej godziny jest zaj\u0119ta. Wybierz inn\u0105 godzin\u0119.");
       }
       const selected = [];
       for (const d of cmd.dates) {
         if (d.date < cmd.start || d.date >= dayAdd(cmd.start, terms.validWeeks * 7)) throw Error(`Wszystkie daty musz\u0105 zmie\u015Bci\u0107 si\u0119 w ${terms.cycleWeeks} tygodniach.`);
-        if (!available(db, c.trainerId, d.date, d.hour, c.id)) throw Error(`Termin ${labelDate(d.date)} ${hourLabel(d.hour)} jest niedost\u0119pny.`);
+        if (!available(db, c.trainerId, d.date, d.hour, c.id, void 0, void 0, cmd.holidayOverride)) throw Error(`Termin ${labelDate(d.date)} ${hourLabel(d.hour)} jest niedost\u0119pny.`);
         if (cmd.dates.filter((x) => x.date === d.date && x.hour === d.hour).length > 1) throw Error("Dwa treningi nie mog\u0105 mie\u0107 tego samego terminu.");
         if (!cmd.ignoreLimits) limitCheck(db, c, d.date, void 0, selected);
         selected.push(d);
@@ -319,7 +369,7 @@ function execute(source, a, cmd) {
       if ([...cmd.dates].sort((a2, b) => a2.date.localeCompare(b.date))[c.intensity - 1].date > dayAdd(dateOf(new Date(db.now)), rules(db).startDays)) throw Error(`Pierwsze ${c.intensity} treningi musz\u0105 odby\u0107 si\u0119 w ci\u0105gu ${rules(db).startDays} dni od zakupu.`);
       const first = Math.min(...cmd.dates.map((d) => +at(d.date, d.hour)));
       const expires = new Date(Math.min(+now + (a.role === "client" ? rules(db).checkoutMinutes / 60 : rules(db).coachHoldHours) * 36e5, first)).toISOString();
-      db.holds.unshift({ id: uid(), clientId: c.id, trainerId: c.trainerId, dates: cmd.dates, slots: cmd.slots, start: [...cmd.dates].sort((a2, b) => a2.date.localeCompare(b.date))[0].date, expires, service: c.service, intensity: c.intensity, price: quote(db, c.id, c.service, c.intensity).total, basePrice: quote(db, c.id, c.service, c.intensity).base, ignoreLimits: !!cmd.ignoreLimits, terms, status: "active", type: a.role === "client" ? "checkout" : "coach" });
+      db.holds.unshift({ id: uid(), clientId: c.id, trainerId: c.trainerId, dates: cmd.dates, slots: cmd.slots, start: [...cmd.dates].sort((a2, b) => a2.date.localeCompare(b.date))[0].date, expires, service: c.service, intensity: c.intensity, price: quote(db, c.id, c.service, c.intensity).total, basePrice: quote(db, c.id, c.service, c.intensity).base, holidayOverride: !!cmd.holidayOverride, ignoreLimits: !!cmd.ignoreLimits, terms, status: "active", type: a.role === "client" ? "checkout" : "coach" });
       notify(db, "Terminy czekaj\u0105 na op\u0142acenie", `Zarezerwowano ${cmd.dates.length} trening\xF3w z ${db.trainers.find((t) => t.id === c.trainerId)?.name}. Pierwszy: ${labelDate(cmd.dates.slice().sort((a2, b) => a2.date.localeCompare(b.date))[0].date)}. P\u0142atno\u015B\u0107 do ${new Date(expires).toLocaleString("pl-PL")}.`, c.id);
       break;
     }
@@ -327,17 +377,24 @@ function execute(source, a, cmd) {
       const h = db.holds.find((h2) => h2.id === cmd.id);
       const c = db.clients.find((c2) => c2.id === h.clientId);
       if (!canSee(db, a, c) || h.status !== "active" || h.expires <= db.now) throw Error("Rezerwacja nie jest aktywna.");
+      if (cmd.slots) {
+        requireStaff(a);
+        if (cmd.slots.length !== h.intensity || new Set(cmd.slots.map((s) => s.day + ":" + s.hour)).size !== h.intensity) throw Error("Wybierz wszystkie r\xF3\u017Cne sta\u0142e godziny.");
+        for (const slot of cmd.slots) if (recurringOwner(db, h.trainerId, slot.day, slot.hour, c.id, h.id)) throw Error("Ta sta\u0142a godzina jest przypisana innemu klientowi.");
+        h.slots = cmd.slots;
+      }
       if (cmd.dates.length !== h.dates.length) throw Error("Zachowaj wszystkie treningi.");
       const selected = [];
       for (const d of cmd.dates) {
         if (d.date < h.start || d.date >= dayAdd(h.start, (h.terms || defaultRules).validWeeks * 7)) throw Error("Wybierz termin w cyklu zarezerwowanego pakietu.");
-        if (!available(db, h.trainerId, d.date, d.hour, c.id, void 0, h.id)) throw Error("Wybrany termin jest niedost\u0119pny.");
+        if (!available(db, h.trainerId, d.date, d.hour, c.id, void 0, h.id, cmd.holidayOverride || h.holidayOverride)) throw Error("Wybrany termin jest niedost\u0119pny.");
         if (cmd.dates.filter((x) => x.date === d.date && x.hour === d.hour).length > 1) throw Error("Daty nie mog\u0105 si\u0119 powtarza\u0107.");
         if (!cmd.ignoreLimits) limitCheck(db, { ...c, intensity: h.intensity }, d.date, void 0, selected, h.id);
         selected.push(d);
       }
-      h.dates = cmd.dates;
+      h.dates = cmd.dates.map((d, i) => ({ ...d, original: d.original || (h.dates[i] && (d.date !== h.dates[i].date || d.hour !== h.dates[i].hour) ? h.dates[i].original || `${h.dates[i].date} ${hourLabel(h.dates[i].hour)}` : void 0) }));
       h.ignoreLimits = !!cmd.ignoreLimits;
+      h.holidayOverride = !!(cmd.holidayOverride || h.holidayOverride);
       audit(db, "Zmieniono wyj\u0105tki rezerwacji bez przed\u0142u\u017Cenia terminu p\u0142atno\u015Bci");
       break;
     }
@@ -346,20 +403,20 @@ function execute(source, a, cmd) {
       const c = db.clients.find((c2) => c2.id === h.clientId);
       if (!canSee(db, a, c)) throw Error("Brak dost\u0119pu.");
       if (h.status === "paid") throw Error("Ten pakiet zosta\u0142 ju\u017C op\u0142acony.");
-      if (h.expires <= db.now) throw Error("Rezerwacja wygas\u0142a. Wybierz terminy ponownie.");
-      for (const d of h.dates) if (!available(db, h.trainerId, d.date, d.hour, h.clientId, void 0, h.id)) throw Error("Termin przesta\u0142 by\u0107 dost\u0119pny. Skontaktuj si\u0119 z administratorem.");
+      if (h.status !== "active" || h.expires <= db.now) throw Error("Rezerwacja wygas\u0142a. Wybierz terminy ponownie.");
+      for (const d of h.dates) if (!available(db, h.trainerId, d.date, d.hour, h.clientId, void 0, h.id, h.holidayOverride)) throw Error(`Termin ${labelDate(d.date)} o ${hourLabel(d.hour)} jest zaj\u0119ty. Edytuj godziny rezerwacji i pon\xF3w rozliczenie.`);
       if ([...h.dates].sort((a2, b) => a2.date.localeCompare(b.date))[h.intensity - 1].date > dayAdd(dateOf(new Date(db.now)), rules(db).startDays)) throw Error("Pierwsze treningi wypadaj\u0105 poza dozwolonym terminem rozpocz\u0119cia.");
       if (!renewalAllowed(db, c.id)) throw Error("Zakup kolejnego pakietu nie jest jeszcze dost\u0119pny.");
       const pricing = quote(db, c.id, h.service, h.intensity, cmd.code, h.basePrice);
       h.price = pricing.total;
       const terms = h.terms || defaultRules;
       const id2 = uid();
-      db.packages.push({ id: id2, clientId: h.clientId, count: h.dates.length, start: h.start, cycleEnd: dayAdd(h.start, (h.terms || defaultRules).cycleWeeks * 7), validUntil: dayAdd(h.start, terms.validWeeks * 7), protectionUntil: dayAdd(h.start, terms.cycleWeeks * 7 + terms.protectionDays), slots: h.slots, service: h.service, intensity: h.intensity, price: h.price, basePrice: pricing.base, discountPercent: pricing.percent, promotionId: pricing.promotionId });
+      db.packages.push({ id: id2, clientId: h.clientId, count: h.dates.length, start: h.start, cycleEnd: dayAdd(h.start, (h.terms || defaultRules).cycleWeeks * 7), validUntil: dayAdd(h.start, terms.validWeeks * 7), protectionUntil: dayAdd(h.start, terms.validWeeks * 7 + terms.protectionDays), slots: h.slots, service: h.service, intensity: h.intensity, price: h.price, basePrice: pricing.base, discountPercent: pricing.percent, promotionId: pricing.promotionId });
       if (pricing.code) {
         const promo = db.promotions.find((p) => p.id === pricing.promotionId);
         promo.used++;
       }
-      for (const d of h.dates) db.sessions.push({ id: uid(), clientId: h.clientId, trainerId: h.trainerId, locationId: db.trainers.find((t) => t.id === h.trainerId)?.locationId || locationsOf(db)[0].id, packageId: id2, date: d.date, hour: d.hour, kind: "training", status: "scheduled", publicNote: "", privateNote: "", comments: [], ignoreLimits: !!h.ignoreLimits, original: d.original });
+      for (const d of h.dates) db.sessions.push({ id: uid(), clientId: h.clientId, trainerId: h.trainerId, locationId: db.trainers.find((t) => t.id === h.trainerId)?.locationId || locationsOf(db)[0].id, packageId: id2, date: d.date, hour: d.hour, kind: "training", status: "scheduled", publicNote: "", privateNote: "", comments: [], holidayOverride: !!h.holidayOverride, ignoreLimits: !!h.ignoreLimits, original: d.original });
       h.status = "paid";
       db.sales.unshift({ id: uid(), packageId: id2, clientId: c.id, label: `${serviceName(h.service)} \xB7 ${trainingCount(h.dates.length)}`, amount: h.price, date: db.now, status: "paid" });
       notify(db, "Tw\xF3j pakiet jest aktywny", `${trainingCount(h.dates.length)}. Pakiet aktywny.`, c.id);
@@ -370,9 +427,9 @@ function execute(source, a, cmd) {
       const p = db.packages.find((p2) => p2.id === cmd.packageId);
       const c = db.clients.find((c2) => c2.id === p.clientId);
       if (!canSee(db, a, c) || p.frozen || !unbooked(db, p) || cmd.date >= p.validUntil || cmd.date < p.start) throw Error("Brak wa\u017Cnego wej\u015Bcia na ten termin.");
-      if (!available(db, c.trainerId, cmd.date, cmd.hour, c.id)) throw Error("Termin jest zaj\u0119ty.");
+      if (!available(db, c.trainerId, cmd.date, cmd.hour, c.id, void 0, void 0, cmd.holidayOverride)) throw Error("Termin jest zaj\u0119ty.");
       if (!cmd.ignoreLimits) limitCheck(db, { ...c, intensity: p.intensity }, cmd.date);
-      db.sessions.push({ id: uid(), clientId: c.id, trainerId: c.trainerId, locationId: db.trainers.find((t) => t.id === c.trainerId)?.locationId || locationsOf(db)[0].id, packageId: p.id, ignoreLimits: !!cmd.ignoreLimits, date: cmd.date, hour: cmd.hour, kind: "training", status: "scheduled", publicNote: "", privateNote: "", comments: [] });
+      db.sessions.push({ id: uid(), clientId: c.id, trainerId: c.trainerId, locationId: db.trainers.find((t) => t.id === c.trainerId)?.locationId || locationsOf(db)[0].id, packageId: p.id, holidayOverride: !!cmd.holidayOverride, ignoreLimits: !!cmd.ignoreLimits, date: cmd.date, hour: cmd.hour, kind: "training", status: "scheduled", publicNote: "", privateNote: "", comments: [] });
       notify(db, "Um\xF3wiono trening", `${labelDate(cmd.date)}, ${hourLabel(cmd.hour)}.`, c.id);
       break;
     }
@@ -383,8 +440,8 @@ function execute(source, a, cmd) {
       const list = db.sessions.filter((s) => s.clientId === c.id && s.status === "scheduled" && s.date >= cmd.from && s.date <= cmd.to);
       if (!list.length) throw Error("Brak przysz\u0142ych wizyt w tym okresie.");
       for (const s of list) {
-        if (!available(db, cmd.trainerId, s.date, s.hour, c.id, s.id)) throw Error(`Zast\u0119pca nie jest dost\u0119pny ${labelDate(s.date)} o ${hourLabel(s.hour)}.`);
-        if (s.kind === "consultation" && !available(db, cmd.trainerId, s.date, s.hour + 1, c.id, s.id)) throw Error("Brak dw\xF3ch godzin dla konsultacji.");
+        if (!available(db, cmd.trainerId, s.date, s.hour, c.id, s.id, void 0, s.holidayOverride)) throw Error(`Zast\u0119pca nie jest dost\u0119pny ${labelDate(s.date)} o ${hourLabel(s.hour)}.`);
+        if (s.kind === "consultation" && !available(db, cmd.trainerId, s.date, s.hour + 1, c.id, s.id, void 0, s.holidayOverride)) throw Error("Brak dw\xF3ch godzin dla konsultacji.");
       }
       const id2 = uid();
       const until = new Date(Math.max(...list.map((s) => +endAt(s))) + rules(db).substituteHours * 36e5).toISOString();
@@ -405,6 +462,7 @@ function execute(source, a, cmd) {
       const until = dayAdd(cmd.date, 1);
       if (db.sessions.some((s) => s.packageId === p.id && s.status === "scheduled" && s.date >= until)) throw Error("Po tej dacie s\u0105 zaplanowane treningi. Najpierw prze\u0142\xF3\u017C je lub odwo\u0142aj.");
       p.validUntil = until;
+      p.protectionUntil = dayAdd(until, rules(db).protectionDays);
       notify(db, "Zmieniono wa\u017Cno\u015B\u0107 pakietu", `Nowa wa\u017Cno\u015B\u0107: ${labelDate(cmd.date)}.`, p.clientId);
       audit(db, `Zmieniono wa\u017Cno\u015B\u0107 pakietu klienta ${db.clients.find((c) => c.id === p.clientId)?.name} na ${cmd.date}`);
       break;
@@ -413,6 +471,7 @@ function execute(source, a, cmd) {
       requireAdmin(a);
       const p = db.packages.find((p2) => p2.id === cmd.packageId);
       p.validUntil = dayAdd(p.validUntil, cmd.days);
+      p.protectionUntil = dayAdd(p.validUntil, rules(db).protectionDays);
       audit(db, `Przed\u0142u\u017Cono pakiet ${p.id} o ${cmd.days} dni`);
       break;
     }
@@ -506,6 +565,7 @@ function execute(source, a, cmd) {
 var trainingCount = (n) => `${n} ${n === 1 ? "trening" : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? "treningi" : "trening\xF3w"}`;
 
 // src/business.ts
+var productColor = (db, s) => db.productCopies?.[s]?.color || (s === "physio" ? "#317E77" : "#CF513C");
 var productCopy = (db, s) => db.productCopies?.[s] || { name: s === "physio" ? "Powr\xF3t do zdrowia" : "Trening personalny", subtitle: "Pakiet trening\xF3w indywidualnych. Sta\u0142e godziny i wsparcie trenera.", bullets: ["60 minut tylko dla Ciebie", "Sta\u0142e godziny w grafiku", "Dziennik i komentarze trenera"] };
 function quote(db, clientId, service2, intensity, code = "", baseOverride) {
   const c = db.clients.find((c2) => c2.id === clientId);
@@ -528,9 +588,33 @@ function renewalAllowed(db, id2) {
 function business(db, a, cmd) {
   if (a.role !== "admin") throw Error("Ta operacja jest dost\u0119pna tylko administratorowi.");
   switch (cmd.type) {
+    case "editExtraHours":
+    case "deleteExtraHours":
+    case "settleExtraHours":
+    case "correctExtraHours": {
+      const h = db.extraHours?.find((h2) => h2.id === cmd.id);
+      if (!h) throw Error("Nie znaleziono dodatkowych godzin.");
+      if (cmd.type === "deleteExtraHours") {
+        if (h.settledAt) throw Error("Rozliczonych godzin nie mo\u017Cna usun\u0105\u0107. Dodaj korekt\u0119.");
+        db.extraHours = db.extraHours.filter((x) => x.id !== h.id);
+      } else if (cmd.type === "settleExtraHours") {
+        if (h.settledAt) throw Error("Te godziny s\u0105 ju\u017C rozliczone.");
+        h.settledAt = db.now;
+      } else {
+        if (cmd.type === "editExtraHours" && h.settledAt) throw Error("Rozliczone godziny wymagaj\u0105 korekty z uzasadnieniem.");
+        if (cmd.type === "correctExtraHours" && (!h.settledAt || !cmd.reason.trim())) throw Error("Podaj pow\xF3d korekty rozliczonych godzin.");
+        if (!Number.isFinite(cmd.hours) || cmd.hours < (cmd.type === "correctExtraHours" ? 0 : 0.01) || cmd.hours > 744 || !Number.isFinite(cmd.rate) || cmd.rate <= 0 || !cmd.description.trim()) throw Error("Sprawd\u017A godziny, stawk\u0119 i opis.");
+        const after = { hours: cmd.hours, rate: cmd.rate, amount: Math.round(cmd.hours * cmd.rate * 100) / 100, description: cmd.description.trim() };
+        if (cmd.type === "correctExtraHours") (h.corrections ??= []).push({ at: db.now, reason: cmd.reason.trim(), before: { hours: h.hours, rate: h.rate, amount: h.amount, description: h.description }, after });
+        Object.assign(h, after);
+      }
+      db.audit.unshift({ id: uid(), at: db.now, text: { editExtraHours: "Edytowano", deleteExtraHours: "Usuni\u0119to nierozliczone", settleExtraHours: "Oznaczono jako rozliczone", correctExtraHours: "Skorygowano rozliczone" }[cmd.type] + " dodatkowe godziny: " + h.description });
+      return db;
+    }
     case "productCopy":
+      if (cmd.copy.color && !/^#[0-9a-fA-F]{6}$/.test(cmd.copy.color)) throw Error("Wybierz poprawny kolor produktu.");
       if (!["personal", "physio"].includes(cmd.service) || !cmd.copy.name.trim() || !cmd.copy.subtitle.trim()) throw Error("Uzupe\u0142nij nazw\u0119 i podtytu\u0142.");
-      (db.productCopies ??= {})[cmd.service] = { name: cmd.copy.name.trim(), subtitle: cmd.copy.subtitle.trim(), bullets: cmd.copy.bullets.map((s) => s.trim()).filter(Boolean) };
+      (db.productCopies ??= {})[cmd.service] = { color: cmd.copy.color || productColor(db, cmd.service), name: cmd.copy.name.trim(), subtitle: cmd.copy.subtitle.trim(), bullets: cmd.copy.bullets.map((s) => s.trim()).filter(Boolean) };
       break;
     case "promotion": {
       const p = cmd.promotion, value = p.kind === "email" ? p.value.trim().toLowerCase() : p.value.trim().toUpperCase();
@@ -656,6 +740,7 @@ function manage(source, a, cmd) {
   const db = structuredClone(source), me = accountOf(db, a);
   if (!me) throw Error("Zaloguj si\u0119.");
   if (cmd.type === "updateProfile") {
+    if (a.role === "trainer") throw Error("Dane trenera mo\u017Ce zmienia\u0107 tylko administrator.");
     const email = cmd.email.trim().toLowerCase();
     if (!cmd.name.trim() || !/^\S+@\S+\.\S+$/.test(email)) throw Error("Podaj imi\u0119, nazwisko i poprawny e-mail.");
     if (db.accounts.some((x) => x.id !== me.id && x.email === email) || db.clients.some((c) => c.id !== me.clientId && c.email.toLowerCase() === email)) throw Error("Ten e-mail jest u\u017Cywany przez inne konto.");
@@ -664,7 +749,7 @@ function manage(source, a, cmd) {
     me.name = cmd.name.trim();
     me.phone = cmd.phone.trim();
     me.photo = cmd.photo;
-    const person = a.role === "trainer" ? db.trainers.find((t) => t.id === a.trainerId) : a.role === "client" ? db.clients.find((c) => c.id === a.clientId) : void 0;
+    const person = a.role === "client" ? db.clients.find((c) => c.id === a.clientId) : void 0;
     if (person) {
       person.name = me.name;
       person.phone = me.phone;
@@ -704,6 +789,25 @@ function manage(source, a, cmd) {
     return db;
   }
   if (a.role !== "admin") throw Error("Tylko administrator mo\u017Ce wykona\u0107 t\u0119 operacj\u0119.");
+  if (cmd.type === "clientProfile") {
+    const c = db.clients.find((c2) => c2.id === cmd.id);
+    if (!c || !cmd.name.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(cmd.birthDate) || cmd.birthDate < "1900-01-01" || cmd.birthDate > dateOf(new Date(db.now)) || (/* @__PURE__ */ new Date(cmd.birthDate + "T12:00:00Z")).toISOString().slice(0, 10) !== cmd.birthDate) throw Error("Sprawd\u017A dane klienta.");
+    c.name = cmd.name.trim();
+    c.phone = cmd.phone.trim();
+    c.birthDate = cmd.birthDate;
+    c.answers = cmd.answers;
+    if (cmd.photo !== void 0) {
+      if (cmd.photo && (!/^data:image\/(png|jpeg|webp);base64,/.test(cmd.photo) || cmd.photo.length > 29e5)) throw Error("Nieprawid\u0142owy plik zdj\u0119cia.");
+      c.photo = cmd.photo;
+    }
+    const account = db.accounts.find((a2) => a2.clientId === c.id);
+    if (account) {
+      account.name = c.name;
+      account.phone = c.phone;
+    }
+    db.audit.unshift({ id: uid(), at: db.now, text: "Administrator poprawi\u0142 dane klienta: " + c.name });
+    return db;
+  }
   if (cmd.type === "birthDate") {
     const c = db.clients.find((c2) => c2.id === cmd.id);
     if (!c || !/^\d{4}-\d{2}-\d{2}$/.test(cmd.value) || cmd.value < "1900-01-01" || cmd.value > dateOf(new Date(db.now)) || (/* @__PURE__ */ new Date(cmd.value + "T12:00:00Z")).toISOString().slice(0, 10) !== cmd.value) throw Error("Podaj poprawn\u0105 dat\u0119 urodzenia.");
@@ -733,7 +837,7 @@ function manage(source, a, cmd) {
   db.audit.unshift({ id: uid(), at: db.now, text: cmd.type === "transferClient" ? "Zmieniono trenera prowadz\u0105cego klienta" : cmd.type === "deleteTrainer" ? "Usuni\u0119to trenera z zespo\u0142u" : "Uzupe\u0142niono dat\u0119 urodzenia klienta" });
   return db;
 }
-var managementTypes = ["updateProfile", "transferClient", "deleteTrainer", "birthDate", "sendLetter", "readLetter", "readNotice", "readAll"];
+var managementTypes = ["clientProfile", "updateProfile", "transferClient", "deleteTrainer", "birthDate", "sendLetter", "readLetter", "readNotice", "readAll"];
 
 // server/access.ts
 function identityAccount(db, userId) {
@@ -772,12 +876,13 @@ function projectState(source, userId) {
     contacts.add(m.to);
   }
   const out = {
+    recurringBusy: [...source.recurringBusy || [], ...source.packages.filter((p) => !managed.has(p.clientId) && !p.frozen && p.protectionUntil > dateOf(new Date(source.now))).flatMap((p) => p.slots.map((s) => ({ ...s, trainerId: source.clients.find((c) => c.id === p.clientId)?.trainerId || "" }))), ...source.holds.filter((h) => !managed.has(h.clientId) && h.status === "active" && h.expires > source.now).flatMap((h) => h.slots.map((s) => ({ ...s, trainerId: h.trainerId })))],
     version: 1,
     now: source.now,
     timeOffsetSeconds: source.timeOffsetSeconds,
     clockVersion: source.clockVersion,
     testToolsEnabled: admin && source.testToolsEnabled,
-    accounts: source.accounts.filter((a) => admin || contacts.has(a.id)).map((a) => safeAccount(a, a.id === me.id)),
+    accounts: source.accounts.filter((a) => admin || contacts.has(a.id)).map((a) => ({ ...safeAccount(a, a.id === me.id), ...admin ? { pendingEmail: a.pendingEmail } : {} })),
     clients: source.clients.filter((c) => managed.has(c.id) || historical.has(c.id)).map((c) => managed.has(c.id) ? {
       id: c.id,
       archived: c.archived,
@@ -822,6 +927,7 @@ function projectState(source, userId) {
       hour: s.hour,
       kind: s.kind,
       status: s.status,
+      holidayOverride: s.holidayOverride,
       locationId: s.locationId,
       consultationPrice: s.consultationPrice,
       publicNote: s.publicNote,
@@ -885,6 +991,13 @@ function occupiedSlots(source, visibleSessions, visibleHolds = /* @__PURE__ */ n
       for (const slot of p.slots) if (slot.day === dayIndex(date2) && !source.sessions.some((s) => s.packageId === p.id && (s.date === date2 && s.hour === slot.hour && s.status.startsWith("cancelled") || s.original === `${date2} ${String(slot.hour).padStart(2, "0")}:00`))) out.push({ id: `protected:${trainerId}:${date2}:${slot.hour}`, trainerId, date: date2, hour: slot.hour, visibility: "busy" });
     }
   }
+  for (const h of source.holds) if (!visibleClients.has(h.clientId) && h.status === "active" && h.expires > source.now) {
+    for (let n = 0; n < days; n++) {
+      const date2 = dayAdd(today, n);
+      if (date2 < h.start) continue;
+      for (const slot of h.slots) if (slot.day === dayIndex(date2) && !h.dates.some((d) => d.original === `${date2} ${String(slot.hour).padStart(2, "0")}:00`)) out.push({ id: `protected:${h.trainerId}:${date2}:${slot.hour}`, trainerId: h.trainerId, date: date2, hour: slot.hour, visibility: "busy" });
+    }
+  }
   return out;
 }
 
@@ -905,10 +1018,12 @@ var rules2 = object(Object.fromEntries(Object.keys(defaultRules).map((k) => [k, 
 var prices = object({ "1": number(0.01, 1e6), "2": number(0.01, 1e6), "3": number(0.01, 1e6) });
 var photo = (v) => typeof v === "string" && (v === "" || v.length <= 29e5 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v));
 var fields = {
+  standardPlan: { clientId: id, intensity: number(1, 3, true) },
   individualPlan: { clientId: id, plan: object({ service, intensity: number(1, 7, true), cycleWeeks: number(1, 52, true), validWeeks: number(1, 104, true), price: optional(number(0.01, 1e6)) }) },
   reviewPlan: { clientId: id, approve: choice(true, false), price: optional(number(0.01, 1e6)) },
   saveLocation: { id, name: text(200, 1), address: text(500) },
   sessionLocation: { id, locationId: id },
+  clientProfile: { id, name: text(200, 1), phone: text(40), birthDate: date, answers: array(text(2e3), 20), photo: optional(photo) },
   updateProfile: { name: text(200, 1), email: text(254, 3), phone: text(40), photo },
   availability: { trainerId: id, days: array(day, 7), hours: array(hour, 24), weeklyHours: optional(object(Object.fromEntries(Array.from({ length: 7 }, (_, i) => [String(i), optional(array(hour, 24))])))) },
   requestPayment: { id, code: optional(text(100)) },
@@ -923,12 +1038,12 @@ var fields = {
   outcome: { id, status: choice("completed", "no_show", "cancelled_early", "cancelled_late", "cancelled_trainer") },
   notes: { id, publicNote: text(2e4), privateNote: text(2e4) },
   comment: { id, text: text(1e4, 1) },
-  reschedule: { id, date, hour, ignoreLimits: optional(choice(true, false)) },
+  reschedule: { id, date, hour, holidayOverride: optional(choice(true, false)), ignoreLimits: optional(choice(true, false)) },
   activate: { id, service, intensity: number(1, 7, true) },
-  hold: { clientId: id, start: date, slots: array(object({ day, hour }), 7), dates, ignoreLimits: optional(choice(true, false)) },
+  hold: { clientId: id, start: date, slots: array(object({ day, hour }), 7), dates, holidayOverride: optional(choice(true, false)), ignoreLimits: optional(choice(true, false)) },
   payHold: { id, code: optional(text(100)) },
-  editHold: { id, dates, ignoreLimits: optional(choice(true, false)) },
-  makeup: { packageId: id, date, hour, ignoreLimits: optional(choice(true, false)) },
+  editHold: { id, dates, slots: optional(array(object({ day, hour }), 7)), holidayOverride: optional(choice(true, false)), ignoreLimits: optional(choice(true, false)) },
+  makeup: { packageId: id, date, hour, holidayOverride: optional(choice(true, false)), ignoreLimits: optional(choice(true, false)) },
   substitute: { clientId: id, trainerId: id, from: date, to: date },
   extend: { packageId: id, days: number(1, 366, true) },
   validity: { packageId: id, date },
@@ -937,8 +1052,12 @@ var fields = {
   unblock: { id },
   settings: { personal: number(0.01, 1e6), physio: number(0.01, 1e6), consultation: number(0.01, 1e6), cancelHours: number(1, 8760, true), rules: optional(rules2), packagePrices: optional(object({ personal: prices, physio: prices })) },
   rate: { trainerId: id, rate: number(0.01, 1e6) },
-  productCopy: { service, copy: object({ name: text(200, 1), subtitle: text(2e3, 1), bullets: array(text(1e3, 1), 20) }) },
+  productCopy: { service, copy: object({ color: optional((v) => typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v)), name: text(200, 1), subtitle: text(2e3, 1), bullets: array(text(1e3, 1), 20) }) },
   promotion: { promotion: object({ kind: choice("email", "code"), value: text(254, 1), percent: number(1, 100), maxUses: number(0, 1e6, true), expires: (v) => v === "" || date(v), active: choice(true, false) }) },
+  editExtraHours: { id, hours: number(0.01, 744), rate: number(0.01, 1e6), description: text(2e3, 1) },
+  deleteExtraHours: { id },
+  settleExtraHours: { id },
+  correctExtraHours: { id, hours: number(0, 744), rate: number(0.01, 1e6), description: text(2e3, 1), reason: text(2e3, 1) },
   disablePromotion: { id },
   extraHours: { trainerId: id, month: (v) => typeof v === "string" && /^20\d\d-(0[1-9]|1[0-2])$/.test(v), hours: number(0.01, 744), rate: number(0.01, 1e6), description: text(2e3, 1) }
 };
@@ -1004,7 +1123,7 @@ function encodeRelational(db, baseline = sourceRows.get(db) || []) {
   };
   for (const a of db.accounts) {
     const c = db.clients.find((c2) => c2.id === a.clientId), t = db.trainers.find((t2) => t2.id === a.trainerId), pid = a.clientId || a.trainerId || a.id;
-    add("aco_profiles", { id: pid, auth_user_id: a.id, name: c?.name || t?.name || a.name || "Administrator ACO!", email: a.email, phone: c?.phone || t?.phone || a.phone || "", avatar_path: c?.photo || t?.photo || a.photo || null, must_change_password: !!a.mustChangePassword });
+    add("aco_profiles", { id: pid, auth_user_id: a.id, name: c?.name || t?.name || a.name || "Administrator ACO!", email: a.email, phone: c?.phone || t?.phone || a.phone || "", avatar_path: c?.photo || t?.photo || a.photo || null, pending_email: a.pendingEmail || null, must_change_password: !!a.mustChangePassword });
     add("aco_accounts", { id: a.id, profile_id: pid, role: a.role, enabled: !a.disabled });
   }
   for (const t of db.trainers) {
@@ -1023,7 +1142,7 @@ function encodeRelational(db, baseline = sourceRows.get(db) || []) {
   }
   for (const service2 of ["personal", "physio"]) {
     const copy = productCopy(db, service2);
-    add("aco_products", { id: service2, name: copy.name, subtitle: copy.subtitle, bullets: copy.bullets });
+    add("aco_products", { id: service2, color: copy.color || (service2 === "physio" ? "#317E77" : "#CF513C"), name: copy.name, subtitle: copy.subtitle, bullets: copy.bullets });
     for (const intensity of [1, 2, 3]) add("aco_product_prices", { id: service2 + ":" + intensity, product_id: service2, intensity, amount_grosz: money2(packagePrice(db, service2, intensity)) });
   }
   for (const l of locationsOf(db)) add("aco_locations", { id: l.id, name: l.name, address: l.address });
@@ -1035,7 +1154,7 @@ function encodeRelational(db, baseline = sourceRows.get(db) || []) {
     for (const s of p.slots) add("aco_package_slots", { id: p.id + ":" + s.day + ":" + s.hour, package_id: p.id, weekday: s.day, hour: s.hour });
   }
   for (const h of db.holds) {
-    add("aco_holds", { id: h.id, base_price_grosz: money2(h.basePrice), ignore_limits: !!h.ignoreLimits, client_id: h.clientId, trainer_id: h.trainerId, product_id: h.service, intensity: h.intensity, starts_on: h.start, expires_at: iso(h.expires), price_grosz: money2(h.price), status: h.status, kind: h.type, payment_requested_at: iso(h.paymentRequest?.at) || null, promotion_code: h.paymentRequest?.code ?? null });
+    add("aco_holds", { id: h.id, base_price_grosz: money2(h.basePrice), holiday_override: !!h.holidayOverride, ignore_limits: !!h.ignoreLimits, client_id: h.clientId, trainer_id: h.trainerId, product_id: h.service, intensity: h.intensity, starts_on: h.start, expires_at: iso(h.expires), price_grosz: money2(h.price), status: h.status, kind: h.type, payment_requested_at: iso(h.paymentRequest?.at) || null, promotion_code: h.paymentRequest?.code ?? null });
     for (const d of h.dates) add("aco_hold_dates", { id: [h.id, d.date, d.hour].join(":"), hold_id: h.id, starts_at: starts(d.date, d.hour), original_starts_at: original(d.original) });
     for (const s of h.slots) add("aco_hold_slots", { id: h.id + ":" + s.day + ":" + s.hour, hold_id: h.id, weekday: s.day, hour: s.hour });
     add("aco_hold_terms", { id: h.id, hold_id: h.id, ...ruleData(h.terms || defaultRules) });
@@ -1043,7 +1162,7 @@ function encodeRelational(db, baseline = sourceRows.get(db) || []) {
   for (const s of db.substitutions) add("aco_substitutions", { id: s.id, client_id: s.clientId, trainer_id: s.trainerId, expires_at: iso(s.until), revoked_at: null });
   for (const s of db.sessions) {
     const start = starts(s.date, s.hour);
-    add("aco_sessions", { ignore_limits: !!s.ignoreLimits, location_id: s.locationId || defaultLocation.id, id: s.id, client_id: s.clientId, trainer_id: s.trainerId, substitution_id: s.substituteId || null, package_id: s.packageId || null, kind: s.kind, starts_at: start, ends_at: new Date(+new Date(start) + (s.kind === "consultation" ? 90 : 60) * 6e4).toISOString(), status: s.status, original_starts_at: original(s.original), consultation_grosz: money2(s.consultationPrice) });
+    add("aco_sessions", { holiday_override: !!s.holidayOverride, ignore_limits: !!s.ignoreLimits, location_id: s.locationId || defaultLocation.id, id: s.id, client_id: s.clientId, trainer_id: s.trainerId, substitution_id: s.substituteId || null, package_id: s.packageId || null, kind: s.kind, starts_at: start, ends_at: new Date(+new Date(start) + (s.kind === "consultation" ? 90 : 60) * 6e4).toISOString(), status: s.status, original_starts_at: original(s.original), consultation_grosz: money2(s.consultationPrice) });
     if (s.earned !== void 0) add("aco_earnings", { id: s.id, trainer_id: s.trainerId, session_id: s.id, kind: s.kind, hours: s.kind === "consultation" ? 1.5 : 1, rate_grosz: money2(s.rate || 0), amount_grosz: money2(s.earned), month: s.date.slice(0, 7) + "-01", description: "" });
     add("aco_public_notes", { session_id: s.id, body: s.publicNote });
     add("aco_trainer_notes", { session_id: s.id, body: s.privateNote });
@@ -1051,7 +1170,7 @@ function encodeRelational(db, baseline = sourceRows.get(db) || []) {
   }
   for (const b of db.blocks) if (!b.id.startsWith("busy:") && !b.id.startsWith("protected:")) add("aco_blackouts", { id: b.id, trainer_id: b.trainerId, starts_at: starts(b.date, b.hour), visibility: b.visibility || "busy" });
   for (const s of db.sales) add("aco_sales", { id: s.id, client_id: s.clientId, package_id: s.packageId || null, session_id: s.sessionId || null, label: s.label, amount_grosz: money2(s.amount), status: s.status, settled_at: iso(s.date) });
-  for (const h of db.extraHours || []) add("aco_earnings", { id: h.id, trainer_id: h.trainerId, session_id: null, kind: "company", hours: h.hours, rate_grosz: money2(h.rate), amount_grosz: money2(h.amount), month: h.month + "-01", description: h.description });
+  for (const h of db.extraHours || []) add("aco_earnings", { id: h.id, trainer_id: h.trainerId, session_id: null, kind: "company", hours: h.hours, rate_grosz: money2(h.rate), amount_grosz: money2(h.amount), month: h.month + "-01", description: h.description, settled_at: h.settledAt || null, corrections: h.corrections || [] });
   for (const m of db.letters || []) add("aco_messages", { id: m.id, sender_id: accountProfile(m.from), recipient_id: accountProfile(m.to), subject: m.subject, body: m.body, created_at: iso(m.at), read_at: m.read ? previous("aco_messages", m.id)?.read_at || iso(db.now) : null });
   for (const m of db.messages) add("aco_events", { id: m.id, client_id: m.clientId || null, title: m.title, body: m.body, audience: m.target, created_at: iso(m.at) });
   for (const a of db.audit) add("aco_activity", { id: a.id, description: a.text, created_at: iso(a.at) });
@@ -1069,7 +1188,7 @@ function decodeRelational(snapshot) {
   const db = { version: 1, timeOffsetSeconds: snapshot.timeOffsetSeconds || 0, clockVersion: snapshot.clockVersion || 0, testToolsEnabled: !!snapshot.testToolsEnabled, now: new Date(snapshot.now).toISOString(), locations: get("aco_locations").map((l) => ({ id: l.id, name: l.name, address: l.address })), accounts: [], clients: [], trainers: [], sessions: [], packages: [], holds: [], messages: [], sales: [], substitutions: [], audit: [], blocks: [], letters: [], noticeReads: {}, promotions: [], extraHours: [], productCopies: {}, settings: { personal: (setting.personal_grosz ?? 18e3) / 100, physio: (setting.physio_grosz ?? 22e3) / 100, consultation: (setting.consultation_grosz ?? 25e3) / 100, cancelHours: setting.cancellation_hours ?? 24, rules: readRules(setting), packagePrices: { personal: {}, physio: {} } } };
   for (const a of accounts) {
     const p = profile(a.profile_id);
-    db.accounts.push({ id: a.id, email: p.email || "", name: p.name, phone: p.phone, photo: p.avatar_path || void 0, role: a.role, disabled: !a.enabled, mustChangePassword: !!p.must_change_password, ...a.role === "client" ? { clientId: a.profile_id } : a.role === "trainer" ? { trainerId: a.profile_id } : {} });
+    db.accounts.push({ id: a.id, email: p.email || "", pendingEmail: p.pending_email || void 0, name: p.name, phone: p.phone, photo: p.avatar_path || void 0, role: a.role, disabled: !a.enabled, mustChangePassword: !!p.must_change_password, ...a.role === "client" ? { clientId: a.profile_id } : a.role === "trainer" ? { trainerId: a.profile_id } : {} });
   }
   for (const t of get("aco_trainers")) {
     const p = profile(t.id), pay = get("aco_trainer_payroll").find((r) => r.trainer_id === t.id) || {}, availability = get("aco_availability").filter((r) => r.trainer_id === t.id), rates = get("aco_trainer_rates").filter((r) => r.trainer_id === t.id);
@@ -1085,20 +1204,21 @@ function decodeRelational(snapshot) {
     const c = db.clients.find((c2) => c2.id === r.client_id);
     if (c) c[r.slot === "approved" ? "individualPlan" : "planProposal"] = { service: r.product, intensity: r.intensity, cycleWeeks: r.cycle_weeks, validWeeks: r.validity_weeks, price: r.price_grosz / 100, status: r.status, proposedBy: r.proposed_by, proposedAt: iso(r.proposed_at), approvedAt: iso(r.approved_at) };
   }
-  for (const p of get("aco_products")) db.productCopies[p.id] = { name: p.name, subtitle: p.subtitle, bullets: p.bullets };
+  for (const p of get("aco_products")) db.productCopies[p.id] = { color: p.color, name: p.name, subtitle: p.subtitle, bullets: p.bullets };
   for (const p of get("aco_product_prices")) db.settings.packagePrices[p.product_id][p.intensity] = p.amount_grosz / 100;
   for (const p of get("aco_promotions")) db.promotions.push({ id: p.id, kind: p.kind, value: p.value, percent: Number(p.percent), maxUses: p.max_uses || 0, used: p.used, expires: p.expires_on || "", active: p.active });
   for (const p of get("aco_packages")) db.packages.push({ id: p.id, clientId: p.client_id, service: p.product, intensity: p.intensity, count: p.count, start: p.starts_on, cycleEnd: p.cycle_end, validUntil: p.valid_until, protectionUntil: p.protection_until, price: p.price_grosz / 100, basePrice: p.base_price_grosz / 100, discountPercent: Number(p.discount_percent), promotionId: p.promotion_id || void 0, frozen: p.frozen, slots: get("aco_package_slots").filter((s) => s.package_id === p.id).map((s) => ({ day: s.weekday, hour: s.hour })) });
-  for (const h of get("aco_holds")) db.holds.push({ id: h.id, basePrice: h.base_price_grosz == null ? void 0 : h.base_price_grosz / 100, ignoreLimits: !!h.ignore_limits, clientId: h.client_id, trainerId: h.trainer_id, service: h.product_id, intensity: h.intensity, start: h.starts_on, expires: iso(h.expires_at), price: h.price_grosz / 100, status: h.status, type: h.kind, terms: readRules(get("aco_hold_terms").find((t) => t.hold_id === h.id) || {}), dates: get("aco_hold_dates").filter((d) => d.hold_id === h.id).map((d) => ({ date: wall(d.starts_at).slice(0, 10), hour: Number(wall(d.starts_at).slice(11, 13)), original: d.original_starts_at ? wall(d.original_starts_at) : void 0 })), slots: get("aco_hold_slots").filter((s) => s.hold_id === h.id).map((s) => ({ day: s.weekday, hour: s.hour })), paymentRequest: h.payment_requested_at ? { at: iso(h.payment_requested_at), code: h.promotion_code || "" } : void 0 });
+  for (const h of get("aco_holds")) db.holds.push({ id: h.id, basePrice: h.base_price_grosz == null ? void 0 : h.base_price_grosz / 100, holidayOverride: !!h.holiday_override, ignoreLimits: !!h.ignore_limits, clientId: h.client_id, trainerId: h.trainer_id, service: h.product_id, intensity: h.intensity, start: h.starts_on, expires: iso(h.expires_at), price: h.price_grosz / 100, status: h.status, type: h.kind, terms: readRules(get("aco_hold_terms").find((t) => t.hold_id === h.id) || {}), dates: get("aco_hold_dates").filter((d) => d.hold_id === h.id).map((d) => ({ date: wall(d.starts_at).slice(0, 10), hour: Number(wall(d.starts_at).slice(11, 13)), original: d.original_starts_at ? wall(d.original_starts_at) : void 0 })), slots: get("aco_hold_slots").filter((s) => s.hold_id === h.id).map((s) => ({ day: s.weekday, hour: s.hour })), paymentRequest: h.payment_requested_at ? { at: iso(h.payment_requested_at), code: h.promotion_code || "" } : void 0 });
   for (const s of get("aco_substitutions")) if (!s.revoked_at) db.substitutions.push({ id: s.id, clientId: s.client_id, trainerId: s.trainer_id, until: iso(s.expires_at) });
   for (const s of get("aco_sessions")) {
     const earning = get("aco_earnings").find((e) => e.session_id === s.id);
-    db.sessions.push({ ignoreLimits: !!s.ignore_limits, locationId: s.location_id || defaultLocation.id, id: s.id, clientId: s.client_id, trainerId: s.trainer_id, packageId: s.package_id || void 0, substituteId: s.substitution_id || void 0, kind: s.kind, status: s.status, date: wall(s.starts_at).slice(0, 10), hour: Number(wall(s.starts_at).slice(11, 13)), original: s.original_starts_at ? wall(s.original_starts_at) : void 0, consultationPrice: s.consultation_grosz == null ? void 0 : s.consultation_grosz / 100, rate: earning ? earning.rate_grosz / 100 : void 0, earned: earning ? earning.amount_grosz / 100 : void 0, publicNote: get("aco_public_notes").find((n) => n.session_id === s.id)?.body || "", privateNote: get("aco_trainer_notes").find((n) => n.session_id === s.id)?.body || "", comments: get("aco_comments").filter((c) => c.session_id === s.id).map((c) => ({ id: c.id, author: c.author_label || profile(c.author_id).name || "", text: c.body, at: iso(c.created_at) })) });
+    db.sessions.push({ holidayOverride: !!s.holiday_override, ignoreLimits: !!s.ignore_limits, locationId: s.location_id || defaultLocation.id, id: s.id, clientId: s.client_id, trainerId: s.trainer_id, packageId: s.package_id || void 0, substituteId: s.substitution_id || void 0, kind: s.kind, status: s.status, date: wall(s.starts_at).slice(0, 10), hour: Number(wall(s.starts_at).slice(11, 13)), original: s.original_starts_at ? wall(s.original_starts_at) : void 0, consultationPrice: s.consultation_grosz == null ? void 0 : s.consultation_grosz / 100, rate: earning ? earning.rate_grosz / 100 : void 0, earned: earning ? earning.amount_grosz / 100 : void 0, publicNote: get("aco_public_notes").find((n) => n.session_id === s.id)?.body || "", privateNote: get("aco_trainer_notes").find((n) => n.session_id === s.id)?.body || "", comments: get("aco_comments").filter((c) => c.session_id === s.id).map((c) => ({ id: c.id, author: c.author_label || profile(c.author_id).name || "", text: c.body, at: iso(c.created_at) })) });
   }
   for (const b of get("aco_blackouts")) db.blocks.push({ id: b.id, trainerId: b.trainer_id, date: wall(b.starts_at).slice(0, 10), hour: Number(wall(b.starts_at).slice(11, 13)), visibility: b.visibility });
+  db.recurringBusy = get("aco_recurring_busy").map((b) => ({ trainerId: b.trainer_id, day: b.weekday, hour: b.hour }));
   for (const b of get("aco_busy_slots")) db.blocks.push({ id: "busy:" + b.trainer_id + ":" + b.starts_at, trainerId: b.trainer_id, date: wall(b.starts_at).slice(0, 10), hour: Number(wall(b.starts_at).slice(11, 13)), visibility: "busy" });
   for (const s of get("aco_sales")) db.sales.push({ id: s.id, clientId: s.client_id, packageId: s.package_id || void 0, sessionId: s.session_id || void 0, label: s.label, amount: s.amount_grosz / 100, status: s.status, date: iso(s.settled_at) });
-  for (const e of get("aco_earnings")) if (e.kind === "company") db.extraHours.push({ id: e.id, trainerId: e.trainer_id, month: e.month.slice(0, 7), hours: Number(e.hours), rate: e.rate_grosz / 100, amount: e.amount_grosz / 100, description: e.description });
+  for (const e of get("aco_earnings")) if (e.kind === "company") db.extraHours.push({ id: e.id, trainerId: e.trainer_id, month: e.month.slice(0, 7), hours: Number(e.hours), rate: e.rate_grosz / 100, amount: e.amount_grosz / 100, description: e.description, settledAt: iso(e.settled_at) || void 0, corrections: e.corrections || [] });
   for (const m of get("aco_messages")) db.letters.push({ id: m.id, from: accountId(m.sender_id), to: accountId(m.recipient_id), fromName: profile(m.sender_id).name || "", toName: profile(m.recipient_id).name || "", subject: m.subject, body: m.body, at: iso(m.created_at), read: !!m.read_at });
   for (const m of get("aco_events")) db.messages.push({ id: m.id, clientId: m.client_id || void 0, title: m.title, body: m.body, target: m.audience, at: iso(m.created_at), read: false });
   for (const r of get("aco_notice_reads")) (db.noticeReads[accountId(r.profile_id)] ??= []).push(r.notice_id);
@@ -1152,7 +1272,7 @@ function relationalCommitArgs(before, after, actorId, action) {
   }
   for (const db of [before, after]) for (const c of db.clients) if (clients.has(c.id) && c.trainerId) trainers.add(c.trainerId);
   const actor = before.accounts.find((a) => a.id === actorId), profile = actor?.clientId || actor?.trainerId || actorId;
-  const calendar = ["register", "hold", "editHold", "payHold", "makeup", "reschedule", "outcome", "substitute", "transferClient", "block", "unblock", "freeze", "validity", "extend", "availability"].includes(action);
+  const calendar = ["individualPlan", "reviewPlan", "standardPlan", "register", "hold", "editHold", "payHold", "makeup", "reschedule", "outcome", "substitute", "transferClient", "block", "unblock", "freeze", "validity", "extend", "availability"].includes(action);
   const dependencies = baseline.filter((r) => r.table === "aco_accounts" && r.key === actorId || r.table === "aco_profiles" && r.key === profile || r.table === "aco_clients" && clients.has(r.key) || r.table === "aco_trainers" && trainers.has(r.key) || calendar && ["aco_settings", "aco_product_prices", "aco_promotions"].includes(r.table)).map(({ table, key, version }) => ({ table, key, version }));
   return { p_clock_version: before.clockVersion || 0, p_changes: delta.changes, p_removed: delta.removed, p_dependencies: dependencies, p_clients: [...clients].sort(), p_trainers: [...trainers].sort(), p_role: actor?.role || "registration", p_action: action };
 }
@@ -1164,6 +1284,7 @@ async function publicAction(body, req, services) {
   const ip = req.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim() || "unknown";
   const limit = body.action === "publicState" ? 120 : 5;
   if (!await rpc("aco_rate_limit", { p_key: await hash2(body.action + ":" + ip), p_max: limit, p_seconds: body.action === "publicState" ? 60 : 3600 })) throw Error("Zbyt wiele pr\xF3b. Spr\xF3buj ponownie p\xF3\u017Aniej.");
+  if (body.action === "register" && await rpc("aco_registration_receipt", { p_request: body.requestId, p_hash: await hash2(JSON.stringify(parseRegistration(body.command))) })) return { ok: true };
   const lookupEmail = body.action === "register" ? parseRegistration(body.command).email : body.action === "activation" && typeof body.email === "string" ? body.email : null;
   let snapshot = await rpc("aco_relational_public_load", { p_email: lookupEmail }), db = decodeRelational(snapshot);
   if (body.action === "publicState") return { accountId: "", revision: snapshot.revision, db: publicState(db) };
@@ -1190,10 +1311,10 @@ async function publicAction(body, req, services) {
     return { ok: true };
   }
   const command = parseRegistration(body.command), email = command.email.trim().toLowerCase();
-  if (!await rpc("aco_rate_limit", { p_key: await hash2("register-email:" + email), p_max: 3, p_seconds: 86400 })) return { ok: true };
+  if (!await rpc("aco_rate_limit", { p_key: await hash2("register-email:" + email), p_max: 3, p_seconds: 86400 })) throw Error("Nie zapisano konsultacji: zbyt wiele pr\xF3b dla tego adresu. Skontaktuj si\u0119 z administratorem.");
   if (!validBirthDate(command.birthDate || "", db.now)) throw Error("Podaj poprawn\u0105 dat\u0119 urodzenia.");
   if (command.date > dayAdd(dateOf(new Date(db.now)), rules(db).consultationDays) || !available(db, command.trainerId, command.date, command.hour) || !available(db, command.trainerId, command.date, command.hour + 1)) throw Error("Wybrany termin nie jest dost\u0119pny.");
-  if (db.accounts.some((a) => a.email === email)) return { ok: true };
+  if (db.accounts.some((a) => a.email === email)) throw Error("Nie zapisano nowej konsultacji. Sprawd\u017A wcze\u015Bniejsze zg\u0142oszenie lub skontaktuj si\u0119 z administratorem.");
   if (!await rpc("aco_rate_limit", { p_key: await hash2("registration-global"), p_max: 60, p_seconds: 3600 })) throw Error("Zbyt wiele rejestracji. Spr\xF3buj ponownie p\xF3\u017Aniej.");
   await registerAccount(db, command);
   const user = await auth("/admin/users", "POST", { email, password: crypto.randomUUID() + crypto.randomUUID(), email_confirm: false });
@@ -1233,7 +1354,7 @@ async function trainerAction(db, body, userId, services) {
   const input = parseTrainer(body.input);
   if (!input.id && input.password.length < 12) throw Error("Has\u0142o musi mie\u0107 co najmniej 12 znak\xF3w.");
   const old = input.id ? db.accounts.find((a) => a.trainerId === input.id) : void 0;
-  if (old && input.email.trim().toLowerCase() !== old.email) throw Error("Zmian\u0119 adresu e-mail potwierdza w\u0142a\u015Bciciel konta.");
+  if (old && input.email.trim().toLowerCase() !== old.email) throw Error("U\u017Cyj osobnej opcji zmiany e-maila i loginu.");
   const next = await addTrainer(db, actorFor(me), input);
   const trainer = next.trainers.find((t) => t.id === (input.id || next.trainers.at(-1).id));
   const account = next.accounts.find((a) => a.trainerId === trainer.id);
@@ -1259,10 +1380,11 @@ var hash = async (v) => Array.from(new Uint8Array(await crypto.subtle.digest("SH
 function createHandler(config, fetcher = fetch) {
   async function rpc(name, args) {
     const result = await fetcher(config.url + "/rest/v1/rpc/" + name, { method: "POST", headers: { apikey: config.serviceKey, Authorization: "Bearer " + config.serviceKey, "Content-Type": "application/json" }, body: JSON.stringify(args) });
-    const data = await result.json();
+    const raw = await result.text();
+    const data = raw ? JSON.parse(raw) : null;
     if (!result.ok) {
-      const messages = { "Test tools disabled": "Tryb testowy jest wy\u0142\u0105czony.", "Offset exceeds ten years": "Czas testowy mo\u017Cna przesun\u0105\u0107 maksymalnie o 10 lat.", "Trainer still has clients or unsettled appointments": "Najpierw przenie\u015B klient\xF3w i rozlicz wizyty trenera.", "Existing client history must be preserved": "Ten trener ma histori\u0119 istniej\u0105cych klient\xF3w. Wybierz zachowanie historii.", "Clock changed; reload": "Czas systemu si\u0119 zmieni\u0142. Spr\xF3buj ponownie." };
-      throw new ApiError(data.code === "40001" ? 409 : 403, messages[data.message] || "Nie uda\u0142o si\u0119 zapisa\u0107 operacji.", data.code);
+      const messages = { "Email already used": "Ten e-mail jest ju\u017C u\u017Cywany.", "Email reserved": "Ten e-mail jest przypisany do trwaj\u0105cej zmiany loginu.", "Email change pending": "Trwa zmiana loginu. Doko\u0144cz j\u0105, zapisuj\u0105c ten sam nowy adres.", "Recurring time is protected for another client": "Ta sta\u0142a godzina jest przypisana innemu klientowi. Wybierz inn\u0105.", "Test tools disabled": "Tryb testowy jest wy\u0142\u0105czony.", "Offset exceeds ten years": "Czas testowy mo\u017Cna przesun\u0105\u0107 maksymalnie o 10 lat.", "Trainer still has clients or unsettled appointments": "Najpierw przenie\u015B klient\xF3w i rozlicz wizyty trenera.", "Existing client history must be preserved": "Ten trener ma histori\u0119 istniej\u0105cych klient\xF3w. Wybierz zachowanie historii.", "Clock changed; reload": "Czas systemu si\u0119 zmieni\u0142. Spr\xF3buj ponownie." };
+      throw new ApiError(data?.code === "40001" ? 409 : 403, messages[data?.message] || "Nie uda\u0142o si\u0119 zapisa\u0107 operacji.", data?.code);
     }
     return data;
   }
@@ -1323,7 +1445,7 @@ function createHandler(config, fetcher = fetch) {
       } catch {
         throw new ApiError(400, "Nieprawid\u0142owy formularz.");
       }
-      const allowed = { accountLifecycle: ["requestId", "accountId", "mode", "confirmation"], testClock: ["requestId", "target"], state: [], quote: ["id", "code"], command: ["requestId", "command"], publicState: [], register: ["requestId", "command"], activation: ["email", "birthDate", "password", "requestId"], trainer: ["requestId", "input"], resetPassword: ["requestId", "accountId"], changePassword: ["requestId", "oldPassword", "password"] };
+      const allowed = { adminEmail: ["requestId", "accountId", "email", "confirmation"], accountLifecycle: ["requestId", "accountId", "mode", "confirmation"], testClock: ["requestId", "target"], state: [], quote: ["id", "code"], command: ["requestId", "command"], publicState: [], register: ["requestId", "command"], activation: ["email", "birthDate", "password", "requestId"], trainer: ["requestId", "input"], resetPassword: ["requestId", "accountId"], changePassword: ["requestId", "oldPassword", "password"] };
       if (!body || typeof body !== "object" || Array.isArray(body) || !Object.hasOwn(allowed, body.action) || Object.keys(body).some((k) => k !== "action" && !allowed[body.action].includes(k))) throw new ApiError(400, "Nieprawid\u0142owe \u017C\u0105danie.");
       if (["publicState", "register", "activation"].includes(body.action)) {
         if ((body.action === "register" || body.action === "activation" && body.password !== void 0) && !uuid.test(body.requestId)) throw new ApiError(400, "Brak identyfikatora operacji.");
@@ -1353,6 +1475,7 @@ function createHandler(config, fetcher = fetch) {
         }
         if (!me) throw new ApiError(403, "Brak dost\u0119pu do konta.");
         if (identity.email && identity.email !== me.email) {
+          if (me.role === "trainer") throw new ApiError(403, "Zmian\u0119 loginu trenera musi zatwierdzi\u0107 administrator.");
           const synced = structuredClone(db), account = synced.accounts.find((a) => a.id === me.id);
           account.email = identity.email;
           const client = synced.clients.find((c) => c.id === me.clientId);
@@ -1369,6 +1492,31 @@ function createHandler(config, fetcher = fetch) {
         if (me.mustChangePassword && body.action !== "changePassword") {
           if (body.action === "state") return reply({ accountId: me.id, revision: snapshot.revision, db: { ...publicState(db), accounts: [{ id: me.id, role: me.role, email: me.email, trainerId: me.trainerId, clientId: me.clientId, mustChangePassword: true }] } });
           throw new ApiError(403, "Najpierw zmie\u0144 has\u0142o tymczasowe.");
+        }
+        if (body.action === "adminEmail") {
+          if (me.role !== "admin") throw new ApiError(403, "Tylko administrator mo\u017Ce zmienia\u0107 login.");
+          const target = db.accounts.find((a) => a.id === body.accountId && !a.disabled), email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+          if (!target || target.role === "admin" || !uuid.test(body.accountId) || !/^\S+@\S+\.\S+$/.test(email) || email.length > 254 || body.confirmation !== "ZMIE\u0143 E-MAIL") throw new ApiError(422, "Sprawd\u017A adres i wpisz ZMIE\u0143 E-MAIL, aby potwierdzi\u0107.");
+          if (snapshot.receipt) {
+            if (snapshot.receipt.hash !== requestHash) throw new ApiError(409, "Identyfikator wykorzystano do innej operacji.");
+            return reply({ accountId: me.id, revision: snapshot.revision, db: projectState(db, me.id) });
+          }
+          await rpc("aco_begin_email_change", { p_actor: me.id, p_session: identity.sessionId, p_target: target.id, p_email: email, p_request: body.requestId, p_hash: requestHash });
+          try {
+            await auth("/admin/users/" + target.id, "PUT", { email, email_confirm: true });
+            await rpc("aco_finish_email_change", { p_actor: me.id, p_session: identity.sessionId, p_target: target.id, p_email: email, p_request: body.requestId, p_hash: requestHash });
+          } catch (error) {
+            if (error instanceof ApiError && error.status === 422) {
+              const current = await auth("/admin/users/" + target.id, "GET");
+              if (current.email === target.email) {
+                await rpc("aco_cancel_email_change", { p_actor: me.id, p_session: identity.sessionId, p_target: target.id, p_email: email });
+                throw new ApiError(422, "Nie zmieniono loginu. Adres mo\u017Ce by\u0107 ju\u017C u\u017Cywany w systemie logowania. Sprawd\u017A nowy e-mail.");
+              }
+            }
+            throw new ApiError(503, "Zmiana loginu nie zosta\u0142a doko\u0144czona. Pon\xF3w zapis tego samego adresu. Do zako\u0144czenia operacji logowanie tego konta jest wstrzymane.");
+          }
+          const updated = await rpc("aco_relational_load", { ...args, p_request: null });
+          return reply({ accountId: me.id, revision: updated.revision, db: projectState(decodeRelational(updated), me.id) });
         }
         if (body.action === "accountLifecycle" || body.action === "testClock") {
           if (me.role !== "admin") throw new ApiError(403, "Tylko administrator mo\u017Ce wykona\u0107 t\u0119 operacj\u0119.");
