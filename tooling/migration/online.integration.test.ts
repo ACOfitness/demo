@@ -20,8 +20,8 @@ for(const account of source.accounts){await pg.query('insert into auth.users val
 const order=(await pg.query<{tables:string[]}>('select aco_private.relational_tables() tables')).rows[0].tables;
 for(const row of encodeRelational(source).sort((a,b)=>order.indexOf(a.table)-order.indexOf(b.table)))await pg.query('select aco_private.write_relational_row($1,$2,$3)',[row.table,row.key,row.data]);
 await pg.exec('set role service_role');
-const known=new Set(['aco_set_test_clock','aco_account_lifecycle','aco_relational_load','aco_relational_commit','aco_relational_public_load','aco_rate_limit','aco_revoke_sessions','aco_claim_activation','aco_complete_activation']);
-let created=500,recoveries=0,passwordWrites=0,failCompletion=false;const passwords=new Map<string,string>();
+const known=new Set(['aco_cancel_email_change','aco_registration_receipt','aco_begin_email_change','aco_finish_email_change','aco_set_test_clock','aco_account_lifecycle','aco_relational_load','aco_relational_commit','aco_relational_public_load','aco_rate_limit','aco_revoke_sessions','aco_claim_activation','aco_complete_activation']);
+let created=500,recoveries=0,passwordWrites=0,failCompletion=false,failEmailFinish=false,rejectEmail=false;const authEmails=new Map(source.accounts.map(a=>[a.id,a.email]));const passwords=new Map<string,string>();
 const fetcher:typeof fetch=async(input,init)=>{
  const url=new URL(String(input));
  if(url.pathname==='/auth/v1/user'&&init?.method!=='PUT'){
@@ -34,16 +34,18 @@ const fetcher:typeof fetch=async(input,init)=>{
  }
  if(url.pathname==='/auth/v1/recover'){recoveries++;return Response.json({})}
  if(url.pathname.startsWith('/auth/v1/admin/users/')&&init?.method==='PUT'){
-  const body=JSON.parse(String(init.body));if(body.password){passwordWrites++;passwords.set(url.pathname.split('/').at(-1)!,body.password)}return Response.json({});
+  const body=JSON.parse(String(init.body));if(body.email){if(rejectEmail)return Response.json({error:'Email exists'},{status:422});authEmails.set(url.pathname.split('/').at(-1)!,body.email)}if(body.password){passwordWrites++;passwords.set(url.pathname.split('/').at(-1)!,body.password)}return Response.json({});
  }
  if(url.pathname==='/auth/v1/token'){
   const body=JSON.parse(String(init?.body));const account=(await pg.query<any>('select a.id from public.aco_accounts a join public.aco_profiles p on p.id=a.profile_id where p.email=$1',[body.email])).rows[0];
   return account&&passwords.get(account.id)===body.password?Response.json({user:{id:account.id}}):Response.json({error:'invalid password'},{status:400});
  }
+ if(url.pathname.startsWith('/auth/v1/admin/users/')&&init?.method==='GET')return Response.json({email:authEmails.get(url.pathname.split('/').at(-1)!)});
  if(''===url.pathname||url.pathname==='/auth/v1/user'&&init?.method==='PUT'||url.pathname.startsWith('/auth/v1/admin/users/'))return Response.json({});
  const name=url.pathname.split('/').at(-1)!;assert.ok(known.has(name));if(name==='aco_complete_activation'&&failCompletion){failCompletion=false;throw new TypeError('Test network failure')}
+ if(name==='aco_finish_email_change'&&failEmailFinish){failEmailFinish=false;throw new TypeError('Test interrupted completion')}
  const values=JSON.parse(String(init?.body)),keys=Object.keys(values);assert.ok(keys.every(k=>/^p_[a-z_]+$/.test(k)));
- try{const result=await pg.query<{value:unknown}>(`select public.${name}(${keys.map((k,i)=>`${k} => $${i+1}`).join(',')}) value`,Object.entries(values).map(([k,v])=>['p_clients','p_trainers'].includes(k)?v:v&&typeof v==='object'?JSON.stringify(v):v));return Response.json(result.rows[0].value)}catch(error){return Response.json({code:(error as {code:string}).code,message:(error as Error).message},{status:400})}
+ try{const result=await pg.query<{value:unknown}>(`select public.${name}(${keys.map((k,i)=>`${k} => $${i+1}`).join(',')}) value`,Object.entries(values).map(([k,v])=>['p_clients','p_trainers'].includes(k)?v:v&&typeof v==='object'?JSON.stringify(v):v));return name==='aco_set_test_clock'?new Response(null,{status:204}):Response.json(result.rows[0].value)}catch(error){return Response.json({code:(error as {code:string}).code,message:(error as Error).message},{status:400})}
 };
 const handle=createHandler({url:'https://project.supabase.co',serviceKey:'server-secret',origins:['https://acofitness.github.io']},fetcher);
 const request=(account:number,body:unknown)=>new Request('https://project.supabase.co/functions/v1/aco-api',{method:'POST',headers:{Origin:'https://acofitness.github.io',Authorization:'Bearer header.'+Buffer.from(JSON.stringify({sub:id(account),session_id:sessionIds.get(account)||id(account+100)})).toString('base64url')+'.signature'},body:JSON.stringify(body)});
@@ -55,6 +57,19 @@ test('two clients cannot reserve the same package slots concurrently',async()=>{
  assert.deepEqual(results.map(r=>r.status).sort(),[200,422]);
  const winner=results.findIndex(r=>r.status===200);successBody=bodies[winner];successActor=winner+1;
  const view=await results[winner].json();assert.equal(view.db.holds.length,1);assert.equal(view.db.clients.length,1);assert.ok(!JSON.stringify(view).includes('12345678901'));
+});
+test('recurring hold ownership is anonymous in client state and enforced under database locks',async()=>{
+ const loser=successActor===1?2:1;
+ const response=await handle(request(loser,{action:'state'}));assert.equal(response.status,200);
+ const view=await response.json();assert.equal(view.db.recurringBusy.length,1);assert.deepEqual(Object.keys(view.db.recurringBusy[0]).sort(),['day','hour','trainerId']);
+ const existing=(await pg.query<any>("select to_jsonb(h) data from public.aco_holds h where status='active' limit 1")).rows[0].data;
+ delete existing.row_version;delete existing.updated_at;
+ const slot=(await pg.query<any>('select weekday,hour from public.aco_hold_slots where hold_id=$1',[existing.id])).rows[0];
+ await pg.exec('begin');try{
+  await pg.query('select aco_private.write_relational_row($1,$2,$3)',['aco_holds',id(290),{...existing,id:id(290),client_id:id(loser)}]);
+  await pg.query('select aco_private.write_relational_row($1,$2,$3)',['aco_hold_slots',id(290)+':pattern',{id:id(290)+':pattern',hold_id:id(290),weekday:slot.weekday,hour:slot.hour}]);
+  await assert.rejects(pg.query('select aco_private.rebuild_calendar($1,$2)',[[id(loser)],[id(3)]]),/Recurring time is protected/);
+ }finally{await pg.exec('rollback')}
 });
 test('retry after lost response does not allocate additional sessions or holds',async()=>{
  const response=await handle(request(successActor,successBody));assert.equal(response.status,200);assert.equal((await response.json()).replayed,true);
@@ -73,6 +88,18 @@ test('registration stores a pending client without a fabricated paid sale',async
  assert.equal((await pg.query<{n:number}>("select count(*)::int n from public.aco_sales")).rows[0].n,0);
  await pg.exec('reset role');await pg.query('insert into auth.sessions values($1,$2,null)',[id(600),id(500)]);await pg.exec('set role service_role');
  const denied=await handle(request(500,{action:'state'}));assert.equal(denied.status,403);
+});
+test('registration never returns a false success for an existing email or email limit; same request safely replays',async()=>{
+ const command={type:'register',name:'New client',email:'new@example.test',phone:'123',birthDate:'1990-01-01',trainerId:id(3),date:dayAdd(dateOf(new Date()),1),hour:11,answers:['Test']};
+ const call=(requestId:string,cmd=command)=>handle(new Request('https://project.supabase.co/functions/v1/aco-api',{method:'POST',headers:{Origin:'https://acofitness.github.io'},body:JSON.stringify({action:'register',requestId,command:cmd})}));
+ assert.equal((await call(id(800))).status,200);
+ const duplicate=await call(crypto.randomUUID(),{...command,date:dayAdd(dateOf(new Date()),2)});assert.equal(duplicate.status,422);const rejected=await duplicate.json();assert.equal(rejected.ok,undefined);assert.match(rejected.error,/Nie zapisano nowej konsultacji/);
+ await pg.query('delete from aco_private.request_limits');
+ const email='limited@example.test',key=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('register-email:'+email))).toString('hex');
+ for(let i=0;i<3;i++)await pg.query('select public.aco_rate_limit($1,3,86400)',[key]);
+ const limited=await call(crypto.randomUUID(),{...command,email});assert.equal(limited.status,422);assert.match((await limited.json()).error,/Nie zapisano konsultacji/);
+ assert.equal((await pg.query<any>("select count(*)::int n from public.aco_sessions where client_id=$1",[registeredClient])).rows[0].n,1);
+ await pg.query('delete from aco_private.request_limits');
 });
 test('trainer cannot approve early, then approves consultation using server time',async()=>{
  const command={type:'activate',id:registeredClient,service:'personal',intensity:1};
@@ -178,4 +205,59 @@ test('individual plans, trainer details and flat consultation rates persist as t
  const snapshot=(await pg.query<any>('select public.aco_relational_load($1,$2) result',[id(4),id(104)])).rows[0].result;
  const db=decodeRelational(snapshot);db.trainers[0].description='Public trainer description';db.trainers[0].consultationRate=135;db.trainers[0].consultationRateHistory=[{from:'2026-01-01',rate:135}];
  const roundtrip=decodeRelational({...snapshot,rows:encodeRelational(db)});assert.equal(roundtrip.trainers[0].consultationRate,135);assert.equal(roundtrip.trainers[0].description,'Public trainer description');assert.equal(roundtrip.trainers[0].consultationRateHistory?.[0].rate,135);
+});
+test('product color persists in typed rows and only admin can change it',async()=>{
+ const command={type:'productCopy',service:'personal',copy:{name:'Trening personalny',subtitle:'Opis produktu',bullets:['Opieka trenera'],color:'#4169A3'}};
+ const denied=await handle(request(3,{action:'command',requestId:id(997),command}));assert.notEqual(denied.status,200);
+ const result=await handle(request(4,{action:'command',requestId:id(998),command}));assert.equal(result.status,200,JSON.stringify(await result.json()));
+ assert.equal((await pg.query<any>("select color from public.aco_products where id='personal'")).rows[0].color,'#4169A3');
+ await assert.rejects(pg.query("update public.aco_products set color='url(https://example.invalid)' where id='personal'"),/check constraint/);
+});
+
+test('company hours persist edits, reject settled deletions, preserve corrections and revoke trainer editing',async()=>{
+ const call=(command:unknown)=>handle(request(4,{action:'command',requestId:crypto.randomUUID(),command}));
+ let response=await call({type:'extraHours',trainerId:id(3),month:'2026-10',hours:2,rate:100,description:'Team meeting'});assert.equal(response.status,200,JSON.stringify(await response.clone().json()));
+ const hours=(await response.json()).db.extraHours.find((h:any)=>h.description==='Team meeting'),hid=hours.id;
+ response=await call({type:'editExtraHours',id:hid,hours:3,rate:100,description:'Team meeting'});assert.equal(response.status,200);
+ response=await call({type:'settleExtraHours',id:hid});assert.equal(response.status,200);
+ assert.equal((await call({type:'deleteExtraHours',id:hid})).status,422);
+ response=await call({type:'correctExtraHours',id:hid,hours:1,rate:100,description:'Team meeting',reason:'Duplicate entry'});assert.equal(response.status,200,JSON.stringify(await response.clone().json()));
+ const row=(await pg.query<any>('select * from public.aco_earnings where id=$1',[hid])).rows[0];assert.equal(row.amount_grosz,10000);assert.equal(row.corrections[0].before.amount,300);assert.ok(row.settled_at);
+ response=await call({type:'correctExtraHours',id:hid,hours:0,rate:100,description:'Cancelled',reason:'Incorrect entry'});assert.equal(response.status,200,JSON.stringify(await response.clone().json()));
+ assert.equal((await pg.query<any>('select amount_grosz from public.aco_earnings where id=$1',[hid])).rows[0].amount_grosz,0);
+ response=await call({type:'extraHours',trainerId:id(3),month:'2026-10',hours:1,rate:50,description:'Remove me'});const removeId=(await response.json()).db.extraHours.find((h:any)=>h.description==='Remove me').id;
+ assert.equal((await call({type:'deleteExtraHours',id:removeId})).status,200);
+ assert.equal((await pg.query<any>('select count(*)::int n from public.aco_earnings where id=$1',[removeId])).rows[0].n,0);
+});
+test('admin email requires confirmation, persists login, revokes sessions and replays safely',async()=>{
+ const command={type:'clientProfile',id:id(2),name:'Updated client',phone:'555',birthDate:'1990-02-02',answers:['Changed']};
+ let response=await handle(request(4,{action:'command',requestId:crypto.randomUUID(),command}));assert.equal(response.status,200,JSON.stringify(await response.clone().json()));
+ const body={action:'adminEmail',requestId:crypto.randomUUID(),accountId:id(2),email:'changed@example.test',confirmation:'ZMIEŃ E-MAIL'};
+ assert.equal((await handle(request(4,{...body,confirmation:''}))).status,422);
+ response=await handle(request(4,body));assert.equal(response.status,200,JSON.stringify(await response.clone().json()));
+ assert.equal(authEmails.get(id(2)),'changed@example.test');
+ assert.equal((await pg.query<any>('select email,pending_email from public.aco_profiles where id=$1',[id(2)])).rows[0].email,'changed@example.test');
+ assert.equal((await handle(request(2,{action:'state'}))).status,403);
+ assert.equal((await handle(request(4,body))).status,200);
+ for(const role of ['anon','authenticated']){await pg.exec('reset role;set role '+role);await assert.rejects(pg.query('select public.aco_begin_email_change($1,$2,$3,$4,$5,$6)',[id(4),id(104),id(2),'bad@example.test',crypto.randomUUID(),'a'.repeat(64)]),/permission denied/)}await pg.exec('reset role;set role service_role');
+});
+
+test('email change recovers after Auth succeeds but database completion is interrupted',async()=>{
+ const body={action:'adminEmail',requestId:crypto.randomUUID(),accountId:id(2),email:'recovered@example.test',confirmation:'ZMIEŃ E-MAIL'};
+ failEmailFinish=true;assert.equal((await handle(request(4,body))).status,503);assert.equal(authEmails.get(id(2)),body.email);
+ assert.equal((await pg.query<any>('select pending_email from public.aco_profiles where id=$1',[id(2)])).rows[0].pending_email,body.email);
+ await assert.rejects(pg.query('select aco_private.relational_session($1,$2)',[id(2),id(102)]),/Email change pending/);
+ const recovered=await handle(request(4,body));assert.equal(recovered.status,200,JSON.stringify(await recovered.clone().json()));
+ assert.equal((await pg.query<any>('select pending_email from public.aco_profiles where id=$1',[id(2)])).rows[0].pending_email,null);
+ const later={...body,requestId:crypto.randomUUID(),email:'later@example.test'};assert.equal((await handle(request(4,later))).status,200);
+ assert.equal((await handle(request(4,body))).status,200);assert.equal(authEmails.get(id(2)),later.email);
+ rejectEmail=true;assert.equal((await handle(request(4,{...body,requestId:crypto.randomUUID(),email:'taken@example.test'}))).status,422);rejectEmail=false;
+ assert.equal((await pg.query<any>('select pending_email from public.aco_profiles where id=$1',[id(2)])).rows[0].pending_email,null);assert.equal(authEmails.get(id(2)),later.email);
+});
+test('trainer cannot change profile via command or database action whitelist',async()=>{
+ await pg.query('update public.aco_profiles set must_change_password=false where id=$1',[id(3)]);sessionIds.set(3,id(1103));
+ const response=await handle(request(3,{action:'command',requestId:crypto.randomUUID(),command:{type:'updateProfile',name:'Not allowed',email:'trainer@example.test',phone:'555',photo:''}}));assert.equal(response.status,422);assert.match((await response.json()).error,/administrator/);
+ const clock=(await pg.query<any>('select version from aco_private.test_clock')).rows[0].version;
+ await assert.rejects(pg.query('select public.aco_relational_commit($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[id(3),id(1103),crypto.randomUUID(),'a'.repeat(64),'updateProfile','trainer','[]','[]','[]',[],[],clock]),/Trainer operation denied/);
+ assert.equal((await handle(request(3,{action:'adminEmail',requestId:crypto.randomUUID(),accountId:id(2),email:'stolen@example.test',confirmation:'ZMIEŃ E-MAIL'}))).status,403);
 });
