@@ -22,9 +22,9 @@ export function createOnlineClient(config:Configuration){
    // Retry only uncertain network failures, preserving the same idempotency key.
    try{return await request<OnlineState>(envelope,current)}catch(error){if(!(error instanceof TypeError))throw error;return request<OnlineState>(envelope,current)}
   },
-  async adminTool(action:'accountLifecycle'|'testClock',input:Record<string,unknown>){const envelope={action,requestId:crypto.randomUUID(),...input},current=await session();try{return await request<OnlineState>(envelope,current)}catch(error){if(!(error instanceof TypeError))throw error;return request<OnlineState>(envelope,current)}},
+  async adminTool(action:'accountLifecycle'|'testClock'|'adminEmail',input:Record<string,unknown>){const envelope={action,requestId:crypto.randomUUID(),...input},current=await session();try{return await request<OnlineState>(envelope,current)}catch(error){if(!(error instanceof TypeError))throw error;return request<OnlineState>(envelope,current)}},
   async quote(id:string,code:string){return request<{base:number;total:number;percent:number}>({action:'quote',id,code},await session())},
-  async register(command:Extract<Command,{type:'register'}>){return request<{ok:boolean}>({action:'register',requestId:crypto.randomUUID(),command},null)},
+  async register(command:Extract<Command,{type:'register'}>){const envelope={action:'register',requestId:crypto.randomUUID(),command};try{return await request<{ok:boolean}>(envelope,null)}catch(error){if(!(error instanceof TypeError))throw error;return request<{ok:boolean}>(envelope,null)}},
   async activation(email:string,birthDate:string,password?:string){return request<{ok:boolean}>({action:'activation',email:email.trim().toLowerCase(),birthDate,...(password!==undefined?{password,requestId:crypto.randomUUID()}:{})},null)},
   async trainer(input:TrainerInput){return request<OnlineState>({action:'trainer',requestId:crypto.randomUUID(),input},await session())},
   async resetPassword(accountId:string){return request<{temporary:string}>({action:'resetPassword',requestId:crypto.randomUUID(),accountId},await session())},

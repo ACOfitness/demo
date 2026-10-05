@@ -1,0 +1,22 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {seed,execute,Actor} from './domain';
+import {workSummary} from './work-summary';
+import {parseCommand} from '../server/commands';
+const admin:Actor={role:'admin',trainerId:'',clientId:''};
+test('unsettled company hours edit/delete; settled corrections preserve snapshots and totals',()=>{
+ let db=seed();db.extraHours=[];
+ db=execute(db,admin,{type:'extraHours',trainerId:'t1',month:'2026-10',hours:2,rate:100,description:'Meeting'});const id=db.extraHours![0].id;
+ db=execute(db,admin,{type:'editExtraHours',id,hours:3,rate:100,description:'Meeting'});assert.equal(db.extraHours![0].amount,300);
+ const removed=execute(db,admin,{type:'deleteExtraHours',id});assert.equal(removed.extraHours!.length,0);
+ db=execute(db,admin,{type:'settleExtraHours',id});assert.ok(db.extraHours![0].settledAt);
+ assert.throws(()=>execute(db,admin,{type:'deleteExtraHours',id}),/korekt/);
+ assert.throws(()=>execute(db,admin,{type:'editExtraHours',id,hours:1,rate:100,description:'New'}),/korekt/);
+ assert.throws(()=>execute(db,admin,{type:'correctExtraHours',id,hours:1,rate:100,description:'New',reason:''}),/powód/);
+ db=execute(db,admin,{type:'correctExtraHours',id,hours:1,rate:100,description:'Meeting',reason:'Duplicate time'});
+ assert.equal(db.extraHours![0].corrections![0].before.amount,300);assert.equal(db.extraHours![0].amount,100);assert.equal(workSummary(db,'t1','2026-10').extra,100);
+ db=execute(db,admin,{type:'correctExtraHours',id,hours:0,rate:100,description:'Cancelled',reason:'Incorrect entry'});
+ assert.equal(db.extraHours![0].corrections!.length,2);assert.equal(workSummary(db,'t1','2026-10').extra,0);
+ assert.throws(()=>execute(db,{...admin,role:'trainer',trainerId:'t1'},{type:'correctExtraHours',id,hours:3,rate:200,description:'Raise',reason:'Raise'}),/administrator/);
+ assert.throws(()=>parseCommand({type:'editExtraHours',id,hours:1,rate:100,description:'Meeting',settledAt:null}),/Nieprawidłowa/);
+});

@@ -1,6 +1,6 @@
 import {dateOf,locationsOf} from './domain';
 import {State,Actor,Command,execute,uid} from './domain';
-export interface Account {mustChangePassword?:boolean;name?:string;phone?:string;photo?:string;id:string;email:string;role:'admin'|'trainer'|'client';trainerId?:string;clientId?:string;password?:{salt:string;hash:string};token?:string;disabled?:boolean}
+export interface Account {pendingEmail?:string;mustChangePassword?:boolean;name?:string;phone?:string;photo?:string;id:string;email:string;role:'admin'|'trainer'|'client';trainerId?:string;clientId?:string;password?:{salt:string;hash:string};token?:string;disabled?:boolean}
 export interface Letter {id:string;from:string;to:string;fromName:string;toName:string;subject:string;body:string;at:string;read:boolean}
 export type Database=State&{accounts:Account[];letters?:Letter[];noticeReads?:Record<string,string[]>};
 export const guest:Actor={role:'guest',trainerId:'',clientId:''};
