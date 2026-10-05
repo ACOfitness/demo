@@ -15,6 +15,7 @@ export async function publicAction(body:any,req:Request,services:AccountServices
  const ip=req.headers.get('x-forwarded-for')?.split(',').at(-1)?.trim()||'unknown';
  const limit=body.action==='publicState'?120:5;
  if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash(body.action+':'+ip),p_max:limit,p_seconds:body.action==='publicState'?60:3600}))throw Error('Zbyt wiele prób. Spróbuj ponownie później.');
+ if(body.action==='register'&&await rpc<boolean>('aco_registration_receipt',{p_request:body.requestId,p_hash:await hash(JSON.stringify(parseRegistration(body.command)))}))return {ok:true};
  const lookupEmail=body.action==='register'?parseRegistration(body.command).email:body.action==='activation'&&typeof body.email==='string'?body.email:null;
  let snapshot=await rpc<Snapshot>('aco_relational_public_load',{p_email:lookupEmail}),db=decode(snapshot);
  if(body.action==='publicState')return {accountId:'',revision:snapshot.revision,db:publicState(db)};
@@ -42,10 +43,10 @@ export async function publicAction(body:any,req:Request,services:AccountServices
   return {ok:true};
  }
  const command=parseRegistration(body.command),email=command.email.trim().toLowerCase();
- if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash('register-email:'+email),p_max:3,p_seconds:86400}))return {ok:true};
+ if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash('register-email:'+email),p_max:3,p_seconds:86400}))throw Error('Nie zapisano konsultacji: zbyt wiele prób dla tego adresu. Skontaktuj się z administratorem.');
  if(!validBirthDate(command.birthDate||'',db.now))throw Error('Podaj poprawną datę urodzenia.');
  if(command.date>dayAdd(dateOf(new Date(db.now)),rules(db).consultationDays)||!available(db,command.trainerId,command.date,command.hour)||!available(db,command.trainerId,command.date,command.hour+1))throw Error('Wybrany termin nie jest dostępny.');
- if(db.accounts.some(a=>a.email===email))return {ok:true};
+ if(db.accounts.some(a=>a.email===email))throw Error('Nie zapisano nowej konsultacji. Sprawdź wcześniejsze zgłoszenie lub skontaktuj się z administratorem.');
  if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash('registration-global'),p_max:60,p_seconds:3600}))throw Error('Zbyt wiele rejestracji. Spróbuj ponownie później.');
  // Validate all scheduling rules before provisioning an Auth identity.
  await registerAccount(db,command);
@@ -80,9 +81,9 @@ export async function trainerAction(db:Database,body:any,userId:string,services:
  if(me?.role!=='admin'||me.mustChangePassword)throw Error('Brak uprawnień administratora.');
  const input=parseTrainer(body.input);
  if(!input.id&&input.password.length<12)throw Error('Hasło musi mieć co najmniej 12 znaków.');
- // Auth email changes require verification and are handled through the profile flow.
+ // Login changes use the separate administrator confirmation workflow.
  const old=input.id?db.accounts.find(a=>a.trainerId===input.id):undefined;
- if(old&&input.email.trim().toLowerCase()!==old.email)throw Error('Zmianę adresu e-mail potwierdza właściciel konta.');
+ if(old&&input.email.trim().toLowerCase()!==old.email)throw Error('Użyj osobnej opcji zmiany e-maila i loginu.');
  const next=await addTrainer(db,actorFor(me),input);
  const trainer=next.trainers.find(t=>t.id===(input.id||next.trainers.at(-1)!.id))!;
  const account=next.accounts.find(a=>a.trainerId===trainer.id)!;

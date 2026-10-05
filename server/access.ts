@@ -31,8 +31,8 @@ export function projectState(source:Database,userId:string):Database {
  const letters=(source.letters||[]).filter(m=>m.from===me.id||m.to===me.id);
  const contacts=new Set([me.id,...recipients(source,actor).map(a=>a.id)]);
  for(const m of letters){contacts.add(m.from);contacts.add(m.to)}
- const out:Database={version:1,now:source.now,timeOffsetSeconds:source.timeOffsetSeconds,clockVersion:source.clockVersion,testToolsEnabled:admin&&source.testToolsEnabled,
- accounts:source.accounts.filter(a=>admin||contacts.has(a.id)).map(a=>safeAccount(a,a.id===me.id)),
+ const out:Database={recurringBusy:[...(source.recurringBusy||[]),...source.packages.filter(p=>!managed.has(p.clientId)&&!p.frozen&&p.protectionUntil>dateOf(new Date(source.now))).flatMap(p=>p.slots.map(s=>({...s,trainerId:source.clients.find(c=>c.id===p.clientId)?.trainerId||''}))),...source.holds.filter(h=>!managed.has(h.clientId)&&h.status==='active'&&h.expires>source.now).flatMap(h=>h.slots.map(s=>({...s,trainerId:h.trainerId})))],version:1,now:source.now,timeOffsetSeconds:source.timeOffsetSeconds,clockVersion:source.clockVersion,testToolsEnabled:admin&&source.testToolsEnabled,
+ accounts:source.accounts.filter(a=>admin||contacts.has(a.id)).map(a=>({...safeAccount(a,a.id===me.id),...(admin?{pendingEmail:a.pendingEmail}:{})})),
  clients:source.clients.filter(c=>managed.has(c.id)||historical.has(c.id)).map(c=>managed.has(c.id)?{
  id:c.id,archived:c.archived,name:c.name,email:c.email,birthDate:c.birthDate,phone:c.phone,trainerId:c.trainerId,
  individualPlan:c.individualPlan,planProposal:admin||me.role==='trainer'?c.planProposal:undefined,active:c.active,invited:c.invited,service:c.service,intensity:c.intensity,prescribed:c.prescribed,answers:[...c.answers],photo:c.photo
@@ -44,7 +44,7 @@ export function projectState(source:Database,userId:string):Database {
  ...(own?{consultationRate:t.consultationRate,consultationRateHistory:structuredClone(t.consultationRateHistory),productRates:structuredClone(t.productRates),productRateHistory:structuredClone(t.productRateHistory),rates:structuredClone(t.rates),phone:t.phone,pesel:t.pesel,student:t.student,address:t.address,taxOffice:t.taxOffice}:{})};
  }),
  sessions:sessions.map(s=>({id:s.id,clientId:s.clientId,trainerId:s.trainerId,packageId:s.packageId,date:s.date,hour:s.hour,kind:s.kind,status:s.status,
- locationId:s.locationId,consultationPrice:s.consultationPrice,publicNote:s.publicNote,privateNote:me.role==='client'?'':s.privateNote,
+ holidayOverride:s.holidayOverride,locationId:s.locationId,consultationPrice:s.consultationPrice,publicNote:s.publicNote,privateNote:me.role==='client'?'':s.privateNote,
  comments:s.comments.map(c=>({id:c.id,author:c.author,text:c.text,at:c.at})),original:s.original,substituteId:s.substituteId,
  ...(admin||s.trainerId===me.trainerId?{rate:s.rate,earned:s.earned}:{})})),
  packages:source.packages.filter(p=>managed.has(p.clientId)).map(p=>structuredClone(p)),
@@ -82,5 +82,6 @@ function occupiedSlots(source:Database,visibleSessions:Set<string>,visibleHolds=
    for(const slot of p.slots)if(slot.day===dayIndex(date)&&!source.sessions.some(s=>s.packageId===p.id&&((s.date===date&&s.hour===slot.hour&&s.status.startsWith('cancelled'))||s.original===`${date} ${String(slot.hour).padStart(2,'0')}:00`)))out.push({id:`protected:${trainerId}:${date}:${slot.hour}`,trainerId,date,hour:slot.hour,visibility:'busy'});
   }
  }
+ for(const h of source.holds)if(!visibleClients.has(h.clientId)&&h.status==='active'&&h.expires>source.now){for(let n=0;n<days;n++){const date=dayAdd(today,n);if(date<h.start)continue;for(const slot of h.slots)if(slot.day===dayIndex(date)&&!h.dates.some(d=>d.original===`${date} ${String(slot.hour).padStart(2,'0')}:00`))out.push({id:`protected:${h.trainerId}:${date}:${slot.hour}`,trainerId:h.trainerId,date,hour:slot.hour,visibility:'busy'})}}
  return out;
 }

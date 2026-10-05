@@ -19,24 +19,27 @@ const rules=object(Object.fromEntries(Object.keys(defaultRules).map(k=>[k,number
 const prices=object({'1':number(.01,1000000),'2':number(.01,1000000),'3':number(.01,1000000)});
 const photo:Check=v=>typeof v==='string'&&(v===''||v.length<=2900000&&/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v));
 const fields:Record<string,Record<string,Check>>={
+ standardPlan:{clientId:id,intensity:number(1,3,true)},
  individualPlan:{clientId:id,plan:object({service,intensity:number(1,7,true),cycleWeeks:number(1,52,true),validWeeks:number(1,104,true),price:optional(number(.01,1000000))})},reviewPlan:{clientId:id,approve:choice(true,false),price:optional(number(.01,1000000))},
  saveLocation:{id,name:text(200,1),address:text(500)},sessionLocation:{id,locationId:id},
+ clientProfile:{id,name:text(200,1),phone:text(40),birthDate:date,answers:array(text(2000),20),photo:optional(photo)},
  updateProfile:{name:text(200,1),email:text(254,3),phone:text(40),photo},
  availability:{trainerId:id,days:array(day,7),hours:array(hour,24),weeklyHours:optional(object(Object.fromEntries(Array.from({length:7},(_,i)=>[String(i),optional(array(hour,24))]))))},
  requestPayment:{id,code:optional(text(100))},confirmConsultation:{id},
  transferClient:{clientId:id,trainerId:id},deleteTrainer:{id},birthDate:{id,value:date},
  sendLetter:{to:id,subject:text(200,1),body:text(20000,1)},readLetter:{id,read:optional(choice(true,false))},readNotice:{id,read:optional(choice(true,false))},readAll:{folder:choice('received','notifications')},
  outcome:{id,status:choice('completed','no_show','cancelled_early','cancelled_late','cancelled_trainer')},
- notes:{id,publicNote:text(20000),privateNote:text(20000)},comment:{id,text:text(10000,1)},reschedule:{id,date,hour,ignoreLimits:optional(choice(true,false))},
+ notes:{id,publicNote:text(20000),privateNote:text(20000)},comment:{id,text:text(10000,1)},reschedule:{id,date,hour,holidayOverride:optional(choice(true,false)),ignoreLimits:optional(choice(true,false))},
  activate:{id,service,intensity:number(1,7,true)},
- hold:{clientId:id,start:date,slots:array(object({day,hour}),7),dates,ignoreLimits:optional(choice(true,false))},payHold:{id,code:optional(text(100))},
- editHold:{id,dates,ignoreLimits:optional(choice(true,false))},makeup:{packageId:id,date,hour,ignoreLimits:optional(choice(true,false))},substitute:{clientId:id,trainerId:id,from:date,to:date},
+ hold:{clientId:id,start:date,slots:array(object({day,hour}),7),dates,holidayOverride:optional(choice(true,false)),ignoreLimits:optional(choice(true,false))},payHold:{id,code:optional(text(100))},
+ editHold:{id,dates,slots:optional(array(object({day,hour}),7)),holidayOverride:optional(choice(true,false)),ignoreLimits:optional(choice(true,false))},makeup:{packageId:id,date,hour,holidayOverride:optional(choice(true,false)),ignoreLimits:optional(choice(true,false))},substitute:{clientId:id,trainerId:id,from:date,to:date},
  extend:{packageId:id,days:number(1,366,true)},validity:{packageId:id,date},freeze:{packageId:id},
  block:{trainerId:id,date,hour,visibility:optional(choice('busy','hidden'))},unblock:{id},
  settings:{personal:number(.01,1000000),physio:number(.01,1000000),consultation:number(.01,1000000),cancelHours:number(1,8760,true),rules:optional(rules),packagePrices:optional(object({personal:prices,physio:prices}))},
  rate:{trainerId:id,rate:number(.01,1000000)},
- productCopy:{service,copy:object({name:text(200,1),subtitle:text(2000,1),bullets:array(text(1000,1),20)})},
+ productCopy:{service,copy:object({color:optional(v=>typeof v==='string'&&/^#[0-9a-fA-F]{6}$/.test(v)),name:text(200,1),subtitle:text(2000,1),bullets:array(text(1000,1),20)})},
  promotion:{promotion:object({kind:choice('email','code'),value:text(254,1),percent:number(1,100),maxUses:number(0,1000000,true),expires:v=>v===''||date(v),active:choice(true,false)})},
+ editExtraHours:{id,hours:number(.01,744),rate:number(.01,1000000),description:text(2000,1)},deleteExtraHours:{id},settleExtraHours:{id},correctExtraHours:{id,hours:number(0,744),rate:number(.01,1000000),description:text(2000,1),reason:text(2000,1)},
  disablePromotion:{id},extraHours:{trainerId:id,month:v=>typeof v==='string'&&/^20\d\d-(0[1-9]|1[0-2])$/.test(v),hours:number(.01,744),rate:number(.01,1000000),description:text(2000,1)}
 };
 

@@ -14,8 +14,9 @@ const hash=async(v:string)=>Array.from(new Uint8Array(await crypto.subtle.digest
 export function createHandler(config:Config,fetcher:typeof fetch=fetch){
  async function rpc<T>(name:string,args:Record<string,unknown>):Promise<T>{
   const result=await fetcher(config.url+'/rest/v1/rpc/'+name,{method:'POST',headers:{apikey:config.serviceKey,Authorization:'Bearer '+config.serviceKey,'Content-Type':'application/json'},body:JSON.stringify(args)});
-  const data=await result.json();
-  if(!result.ok){const messages:Record<string,string>={'Test tools disabled':'Tryb testowy jest wyłączony.','Offset exceeds ten years':'Czas testowy można przesunąć maksymalnie o 10 lat.','Trainer still has clients or unsettled appointments':'Najpierw przenieś klientów i rozlicz wizyty trenera.','Existing client history must be preserved':'Ten trener ma historię istniejących klientów. Wybierz zachowanie historii.','Clock changed; reload':'Czas systemu się zmienił. Spróbuj ponownie.'};throw new ApiError(data.code==='40001'?409:403,messages[data.message]||'Nie udało się zapisać operacji.',data.code);}
+  const raw=await result.text();
+  const data=raw?JSON.parse(raw):null;
+  if(!result.ok){const messages:Record<string,string>={'Email already used':'Ten e-mail jest już używany.','Email reserved':'Ten e-mail jest przypisany do trwającej zmiany loginu.','Email change pending':'Trwa zmiana loginu. Dokończ ją, zapisując ten sam nowy adres.','Recurring time is protected for another client':'Ta stała godzina jest przypisana innemu klientowi. Wybierz inną.','Test tools disabled':'Tryb testowy jest wyłączony.','Offset exceeds ten years':'Czas testowy można przesunąć maksymalnie o 10 lat.','Trainer still has clients or unsettled appointments':'Najpierw przenieś klientów i rozlicz wizyty trenera.','Existing client history must be preserved':'Ten trener ma historię istniejących klientów. Wybierz zachowanie historii.','Clock changed; reload':'Czas systemu się zmienił. Spróbuj ponownie.'};throw new ApiError(data?.code==='40001'?409:403,messages[data?.message]||'Nie udało się zapisać operacji.',data?.code);}
   return data as T;
  }
  async function auth(path:string,method:string,body?:unknown,token?:string){
@@ -51,7 +52,7 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
    while(true){const part=await reader.read();if(part.done)break;size+=part.value.byteLength;if(size>3000000){await reader.cancel();throw new ApiError(413,'Formularz jest zbyt duży.')}chunks.push(part.value)}
    const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length}
    let body;try{body=JSON.parse(new TextDecoder().decode(bytes))}catch{throw new ApiError(400,'Nieprawidłowy formularz.')}
-   const allowed:Record<string,string[]>={accountLifecycle:['requestId','accountId','mode','confirmation'],testClock:['requestId','target'],state:[],quote:['id','code'],command:['requestId','command'],publicState:[],register:['requestId','command'],activation:['email','birthDate','password','requestId'],trainer:['requestId','input'],resetPassword:['requestId','accountId'],changePassword:['requestId','oldPassword','password']};
+   const allowed:Record<string,string[]>={adminEmail:['requestId','accountId','email','confirmation'],accountLifecycle:['requestId','accountId','mode','confirmation'],testClock:['requestId','target'],state:[],quote:['id','code'],command:['requestId','command'],publicState:[],register:['requestId','command'],activation:['email','birthDate','password','requestId'],trainer:['requestId','input'],resetPassword:['requestId','accountId'],changePassword:['requestId','oldPassword','password']};
    if(!body||typeof body!=='object'||Array.isArray(body)||!Object.hasOwn(allowed,body.action)||Object.keys(body).some(k=>k!=='action'&&!allowed[body.action].includes(k)))throw new ApiError(400,'Nieprawidłowe żądanie.');
    if(['publicState','register','activation'].includes(body.action)){
     if((body.action==='register'||body.action==='activation'&&body.password!==undefined)&&!uuid.test(body.requestId))throw new ApiError(400,'Brak identyfikatora operacji.');
@@ -72,6 +73,7 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
     let me;try{me=identityAccount(db,identity.id)}catch{throw new ApiError(403,'Konto nie jest aktywne lub dostęp został odebrany.');}
     if(!me)throw new ApiError(403,'Brak dostępu do konta.');
     if(identity.email&&identity.email!==me.email){
+     if(me.role==='trainer')throw new ApiError(403,'Zmianę loginu trenera musi zatwierdzić administrator.');
      const synced=structuredClone(db),account=synced.accounts.find(a=>a.id===me.id)!;account.email=identity.email;
      const client=synced.clients.find(c=>c.id===me.clientId);if(client)client.email=identity.email;
      const delta=relationalCommitArgs(db,synced,me.id,'emailVerified');
@@ -82,6 +84,24 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
     if(me.mustChangePassword&&body.action!=='changePassword'){
     if(body.action==='state')return reply({accountId:me.id,revision:snapshot.revision,db:{...publicState(db),accounts:[{id:me.id,role:me.role,email:me.email,trainerId:me.trainerId,clientId:me.clientId,mustChangePassword:true}]}});
      throw new ApiError(403,'Najpierw zmień hasło tymczasowe.');
+    }
+    if(body.action==='adminEmail'){
+     if(me.role!=='admin')throw new ApiError(403,'Tylko administrator może zmieniać login.');
+     const target=db.accounts.find(a=>a.id===body.accountId&&!a.disabled),email=typeof body.email==='string'?body.email.trim().toLowerCase():'';
+     if(!target||target.role==='admin'||!uuid.test(body.accountId)||!/^\S+@\S+\.\S+$/.test(email)||email.length>254||body.confirmation!=='ZMIEŃ E-MAIL')throw new ApiError(422,'Sprawdź adres i wpisz ZMIEŃ E-MAIL, aby potwierdzić.');
+     if(snapshot.receipt){if(snapshot.receipt.hash!==requestHash)throw new ApiError(409,'Identyfikator wykorzystano do innej operacji.');return reply({accountId:me.id,revision:snapshot.revision,db:projectState(db,me.id)})}
+     await rpc('aco_begin_email_change',{p_actor:me.id,p_session:identity.sessionId,p_target:target.id,p_email:email,p_request:body.requestId,p_hash:requestHash});
+     try{
+      await auth('/admin/users/'+target.id,'PUT',{email,email_confirm:true});
+      await rpc('aco_finish_email_change',{p_actor:me.id,p_session:identity.sessionId,p_target:target.id,p_email:email,p_request:body.requestId,p_hash:requestHash});
+     }catch(error){
+      if(error instanceof ApiError&&error.status===422){
+       const current=await auth('/admin/users/'+target.id,'GET');
+       if(current.email===target.email){await rpc('aco_cancel_email_change',{p_actor:me.id,p_session:identity.sessionId,p_target:target.id,p_email:email});throw new ApiError(422,'Nie zmieniono loginu. Adres może być już używany w systemie logowania. Sprawdź nowy e-mail.');}
+      }
+      throw new ApiError(503,'Zmiana loginu nie została dokończona. Ponów zapis tego samego adresu. Do zakończenia operacji logowanie tego konta jest wstrzymane.');}
+     const updated=await rpc<Snapshot>('aco_relational_load',{...args,p_request:null});
+     return reply({accountId:me.id,revision:updated.revision,db:projectState(decode(updated),me.id)});
     }
     if(body.action==='accountLifecycle'||body.action==='testClock'){
      if(me.role!=='admin')throw new ApiError(403,'Tylko administrator może wykonać tę operację.');
