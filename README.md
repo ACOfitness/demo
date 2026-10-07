@@ -1,4 +1,4 @@
-# ACO! — panel treningów personalnych
+# ACO! - panel treningów personalnych
 
 Panel: https://acofitness.github.io/demo/panel.html
 
@@ -9,11 +9,11 @@ z zapisem lokalnym. Sesja Auth jest przechowywana w sessionStorage.
 ## Praca z kodem
 
 - `pnpm install --frozen-lockfile`
-- `pnpm test` — reguły biznesowe, filtrowanie danych, autoryzacja HTTP
+- `pnpm test` - reguły biznesowe, filtrowanie danych, autoryzacja HTTP
 - `pnpm --dir tooling/migration install --ignore-workspace --frozen-lockfile`
-- `pnpm run test:database` — RLS, transakcje, konflikty rezerwacji, aktywacja
-- `pnpm build` — kontrola TypeScript i statyczna strona
-- `pnpm run build:server` — samodzielny plik funkcji Edge
+- `pnpm run test:database` - RLS, transakcje, konflikty rezerwacji, aktywacja
+- `pnpm build` - kontrola TypeScript i statyczna strona
+- `pnpm run build:server` - samodzielny plik funkcji Edge
 
 GitHub Actions publikuje Pages po ręcznym uruchomieniu workflow. Kod publiczny
 zawiera wyłącznie publiczny adres projektu i publishable key. Klucz serwerowy
@@ -28,13 +28,9 @@ zmiany. Reset unieważnia istniejące sesje. Usunięcie trenera odbiera dostęp,
 zachowując historię; klient musi mieć prowadzącego.
 
 Rejestracja rezerwuje konsultację. Trener może zatwierdzić klienta od 30 minut
-po jej początku, wybierając produkt i intensywność. Aktywacja wymaga linku
-wysłanego na adres klienta. E-mail i data urodzenia nie wystarczają do przejęcia
-konta. Do wysyłki do rzeczywistych klientów potrzebny jest własny SMTP.
-
-Role, dostęp zastępcy, ceny, limity treningów i czas są sprawdzane na serwerze.
+po jej początku, wybierając produkt i intensywność. Aktywacja zatwierdzonego konta wymaga e-maila i daty urodzenia, zgodnie z decyzją właściciela. Nie wymaga linku ani SMTP. Te dane nie stanowią silnego dowodu tożsamości; dostępne są limity prób oraz wyłączny, odporny na ponawianie zapis hasła. Role, dostęp zastępcy, ceny, limity treningów i czas są sprawdzane na serwerze.
 Klient nie otrzymuje prywatnych notatek ani stawek trenerów. Administrator nie
-otrzymuje cudzej prywatnej korespondencji. Zegar testowy nie działa online.
+otrzymuje cudzej prywatnej korespondencji. Administrator może zmieniać wspólny offset czasu biznesowego. Sesje Auth i zabezpieczenia używają czasu rzeczywistego.
 
 ## Rozliczenia
 
