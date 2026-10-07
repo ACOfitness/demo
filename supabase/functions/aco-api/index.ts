@@ -1,3 +1,6 @@
+// src/api-version.ts
+var API_VERSION = "2026-10-07-audit-1";
+
 // src/holidays.ts
 function holidayName(date2) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date2)) return;
@@ -23,7 +26,7 @@ function availabilityRanges(hours) {
 }
 
 // src/domain.ts
-var defaultRules = { renewalDays: 7, cycleWeeks: 4, validWeeks: 6, coachHoldHours: 72, checkoutMinutes: 15, protectionDays: 1, consultationDays: 7, startDays: 14, substituteHours: 48, freezeDays: 7 };
+var defaultRules = { renewalDays: 7, cycleWeeks: 4, validWeeks: 6, coachHoldHours: 72, checkoutMinutes: 15, paymentReviewHours: 72, protectionDays: 1, consultationDays: 7, startDays: 14, substituteHours: 48, freezeDays: 7 };
 var rules = (db) => Object.fromEntries(Object.entries(defaultRules).map(([key, value]) => [key, db.settings.rules?.[key] ?? value]));
 var packagePrice = (db, service2, intensity) => db.settings.packagePrices?.[service2]?.[intensity] ?? db.settings[service2] * intensity * rules(db).cycleWeeks;
 var trainerHours = (t, day2) => t.weeklyHours ? t.weeklyHours[day2] || [] : t.days.includes(day2) ? t.hours : [];
@@ -51,7 +54,7 @@ var at = (d, h) => {
 var endAt = (s) => new Date(+at(s.date, s.hour) + (s.kind === "consultation" ? 90 : 60) * 6e4);
 var weekOf = (s) => dayAdd(s, -dayIndex(s));
 var dayIndex = (s) => ((/* @__PURE__ */ new Date(s + "T12:00:00Z")).getUTCDay() + 6) % 7;
-var money = (n) => new Intl.NumberFormat("pl-PL", { style: "currency", currency: "PLN", maximumFractionDigits: 2 }).format(n);
+var money = (n) => new Intl.NumberFormat("pl-PL", { style: "currency", currency: "PLN", minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: true }).format(n);
 var labelDate = (s, opts = { day: "numeric", month: "long" }) => (/* @__PURE__ */ new Date(s.slice(0, 10) + "T12:00:00")).toLocaleDateString("pl-PL", opts);
 var hourLabel = (h) => `${String(h).padStart(2, "0")}:00`;
 var serviceName = (s) => s === "physio" ? "Powr\xF3t do zdrowia" : "Trening personalny";
@@ -59,7 +62,10 @@ var statusLabels = { scheduled: "Zaplanowany", completed: "Zrealizowany", no_sho
 var spends = (s) => ["completed", "no_show", "cancelled_late"].includes(s.status);
 var counts = (s) => s.status === "scheduled" || spends(s);
 var unbooked = (db, p) => Math.max(0, p.count - db.sessions.filter((s) => s.packageId === p.id && counts(s)).length);
-var currentPackage = (db, id2) => db.packages.filter((p) => p.clientId === id2).sort((a, b) => b.start.localeCompare(a.start))[0];
+var currentPackage = (db, id2) => {
+  const today = dateOf(new Date(db.now)), list = db.packages.filter((p) => p.clientId === id2 && p.start <= today).sort((a, b) => b.start.localeCompare(a.start));
+  return list.find((p) => p.validUntil > today) || list[0];
+};
 var canSee = (db, a, c) => a.role === "admin" || a.role === "client" && a.clientId === c.id && c.active || a.role === "trainer" && (a.trainerId === c.trainerId || db.substitutions.some((s) => s.clientId === c.id && s.trainerId === a.trainerId && s.until > db.now));
 function recurringOwner(db, trainerId, day2, hour2, clientId, ignoreHold) {
   const today = dateOf(new Date(db.now));
@@ -258,6 +264,11 @@ function execute(source, a, cmd) {
         s.original = s.original || `${s.date} ${hourLabel(s.hour)}`;
         s.date = cmd.date;
         s.hour = cmd.hour;
+        if (s.substituteId) {
+          const substitution = db.substitutions.find((x) => x.id === s.substituteId);
+          const related = db.sessions.filter((x) => x.substituteId === s.substituteId && !x.status.startsWith("cancelled"));
+          if (substitution && related.length) substitution.until = new Date(Math.max(...related.map((x) => +endAt(x))) + rules(db).substituteHours * 36e5).toISOString();
+        }
         s.ignoreLimits = !!cmd.ignoreLimits;
         s.holidayOverride = !!cmd.holidayOverride;
         notify(db, "Zmieniono konsultacj\u0119", `${labelDate(s.date)}, ${hourLabel(s.hour)}`, s.clientId);
@@ -272,6 +283,11 @@ function execute(source, a, cmd) {
       s.original = s.original || `${s.date} ${hourLabel(s.hour)}`;
       s.date = cmd.date;
       s.hour = cmd.hour;
+      if (s.substituteId) {
+        const substitution = db.substitutions.find((x) => x.id === s.substituteId);
+        const related = db.sessions.filter((x) => x.substituteId === s.substituteId && !x.status.startsWith("cancelled"));
+        if (substitution && related.length) substitution.until = new Date(Math.max(...related.map((x) => +endAt(x))) + rules(db).substituteHours * 36e5).toISOString();
+      }
       s.ignoreLimits = !!cmd.ignoreLimits;
       s.holidayOverride = !!cmd.holidayOverride;
       notify(db, "Zmieniono termin treningu", `Nowy termin: ${labelDate(s.date)}, ${hourLabel(s.hour)}.`, s.clientId);
@@ -437,6 +453,8 @@ function execute(source, a, cmd) {
       requireAdmin(a);
       const c = db.clients.find((c2) => c2.id === cmd.clientId);
       if (cmd.trainerId === c.trainerId) throw Error("Wybierz innego trenera.");
+      const replacement = db.trainers.find((t) => t.id === cmd.trainerId && !t.deleted);
+      if (!replacement || (replacement.products || ["personal"]).includes(c.service) === false) throw Error("Zast\u0119pca musi prowadzi\u0107 produkt przypisany klientowi.");
       const list = db.sessions.filter((s) => s.clientId === c.id && s.status === "scheduled" && s.date >= cmd.from && s.date <= cmd.to);
       if (!list.length) throw Error("Brak przysz\u0142ych wizyt w tym okresie.");
       for (const s of list) {
@@ -482,6 +500,7 @@ function execute(source, a, cmd) {
       if (p.frozen) {
         db.sessions.filter((s) => s.packageId === p.id && s.status === "scheduled" && at(s.date, s.hour) > now).forEach((s) => s.status = "cancelled_early");
         p.validUntil = dayAdd(p.validUntil, rules(db).freezeDays);
+        p.protectionUntil = dayAdd(p.validUntil, rules(db).protectionDays);
       }
       audit(db, `${p.frozen ? "Zamro\u017Cono pakiet i zwolniono wizyty" : "Odmro\u017Cono pakiet"} ${p.id}`);
       break;
@@ -582,6 +601,7 @@ function quote(db, clientId, service2, intensity, code = "", baseOverride) {
   return { base, percent, total: Math.round(base * (100 - percent)) / 100, promotionId: chosen?.id, code: chosen?.kind === "code" ? chosen.value : void 0 };
 }
 function renewalAllowed(db, id2) {
+  if (db.packages.some((p2) => p2.clientId === id2 && p2.start > dateOf(new Date(db.now)))) return false;
   const p = currentPackage(db, id2);
   return !p || dateOf(new Date(db.now)) >= dayAdd(p.cycleEnd, -rules(db).renewalDays);
 }
@@ -875,6 +895,7 @@ function projectState(source, userId) {
     contacts.add(m.from);
     contacts.add(m.to);
   }
+  const visibleNotices = new Set(notifications(source, actor).map((n) => n.id));
   const out = {
     recurringBusy: [...source.recurringBusy || [], ...source.packages.filter((p) => !managed.has(p.clientId) && !p.frozen && p.protectionUntil > dateOf(new Date(source.now))).flatMap((p) => p.slots.map((s) => ({ ...s, trainerId: source.clients.find((c) => c.id === p.clientId)?.trainerId || "" }))), ...source.holds.filter((h) => !managed.has(h.clientId) && h.status === "active" && h.expires > source.now).flatMap((h) => h.slots.map((s) => ({ ...s, trainerId: h.trainerId })))],
     version: 1,
@@ -942,7 +963,7 @@ function projectState(source, userId) {
     sales: source.sales.filter((s) => admin || me.role === "client" && s.clientId === me.clientId).map((s) => structuredClone(s)),
     substitutions: source.substitutions.filter((s) => managed.has(s.clientId) && s.until > source.now).map((s) => structuredClone(s)),
     blocks: occupiedSlots(source, new Set(sessions.map((s) => s.id)), new Set(source.holds.filter((h) => managed.has(h.clientId)).map((h) => h.id)), managed),
-    messages: source.messages.filter((m) => notifications(source, actor).some((n) => n.id === m.id)).map((m) => structuredClone(m)),
+    messages: source.messages.filter((m) => visibleNotices.has(m.id)).map((m) => structuredClone(m)),
     letters: letters.map((m) => structuredClone(m)),
     noticeReads: { [me.id]: [...source.noticeReads?.[me.id] || []] },
     locations: structuredClone(source.locations),
@@ -981,14 +1002,20 @@ function occupiedSlots(source, visibleSessions, visibleHolds = /* @__PURE__ */ n
   for (const s of source.sessions) if (!visibleSessions.has(s.id) && s.status === "scheduled") for (let h = s.hour; h < s.hour + (s.kind === "consultation" ? 2 : 1); h++) out.push({ id: `busy:${s.trainerId}:${s.date}:${h}`, trainerId: s.trainerId, date: s.date, hour: h, visibility: "busy" });
   for (const h of source.holds) if (!visibleHolds.has(h.id) && h.status === "active" && h.expires > source.now) for (const d of h.dates) out.push({ id: `busy:${h.trainerId}:${d.date}:${d.hour}`, trainerId: h.trainerId, date: d.date, hour: d.hour, visibility: "busy" });
   const today = dateOf(new Date(source.now));
+  const trainerByClient = new Map(source.clients.map((c) => [c.id, c.trainerId]));
+  const released = /* @__PURE__ */ new Set();
+  for (const s of source.sessions) {
+    if (s.status.startsWith("cancelled")) released.add(`${s.packageId}:${s.date}:${s.hour}`);
+    if (s.original) released.add(`${s.packageId}:${s.original.slice(0, 10)}:${Number(s.original.slice(11, 13))}`);
+  }
   const days = visibleClients.size ? 366 : rules(source).consultationDays + 1;
   for (const p of source.packages) if (!visibleClients.has(p.clientId) && p.protectionUntil > today) {
-    const trainerId = source.clients.find((c) => c.id === p.clientId)?.trainerId;
+    const trainerId = trainerByClient.get(p.clientId);
     if (!trainerId) continue;
     for (let n = 0; n < days; n++) {
       const date2 = dayAdd(today, n);
       if (date2 < p.start) continue;
-      for (const slot of p.slots) if (slot.day === dayIndex(date2) && !source.sessions.some((s) => s.packageId === p.id && (s.date === date2 && s.hour === slot.hour && s.status.startsWith("cancelled") || s.original === `${date2} ${String(slot.hour).padStart(2, "0")}:00`))) out.push({ id: `protected:${trainerId}:${date2}:${slot.hour}`, trainerId, date: date2, hour: slot.hour, visibility: "busy" });
+      for (const slot of p.slots) if (slot.day === dayIndex(date2) && !released.has(`${p.id}:${date2}:${slot.hour}`)) out.push({ id: `protected:${trainerId}:${date2}:${slot.hour}`, trainerId, date: date2, hour: slot.hour, visibility: "busy" });
     }
   }
   for (const h of source.holds) if (!visibleClients.has(h.clientId) && h.status === "active" && h.expires > source.now) {
@@ -1014,7 +1041,7 @@ var hour = number(0, 23, true);
 var service = choice("personal", "physio");
 var date = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && v >= "1900-01-01" && v <= "2200-12-31" && Number.isFinite(Date.parse(v + "T12:00:00Z")) && (/* @__PURE__ */ new Date(v + "T12:00:00Z")).toISOString().slice(0, 10) === v;
 var dates = array(object({ date, hour, original: optional(text(100)) }), 364);
-var rules2 = object(Object.fromEntries(Object.keys(defaultRules).map((k) => [k, number(1, k.endsWith("Weeks") ? 52 : 366, true)])));
+var rules2 = object(Object.fromEntries(Object.keys(defaultRules).map((k) => [k, k === "paymentReviewHours" ? optional(number(1, 366, true)) : number(1, k.endsWith("Weeks") ? 52 : 366, true)])));
 var prices = object({ "1": number(0.01, 1e6), "2": number(0.01, 1e6), "3": number(0.01, 1e6) });
 var photo = (v) => typeof v === "string" && (v === "" || v.length <= 29e5 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v));
 var fields = {
@@ -1072,6 +1099,7 @@ function applyCommand(source, userId, input, serverNow) {
   const me = identityAccount(db, userId);
   if (me.mustChangePassword) throw Error("Najpierw zmie\u0144 has\u0142o tymczasowe.");
   const cmd = parseCommand(input);
+  if (cmd.type === "settings" && cmd.rules && !cmd.rules.paymentReviewHours) cmd.rules.paymentReviewHours = rules(db).paymentReviewHours || 72;
   if (cmd.type === "payHold" && me.role !== "admin") throw Error("Op\u0142at\u0119 mo\u017Ce potwierdzi\u0107 wy\u0142\u0105cznie administrator.");
   db.accounts.sort((a, b) => Number(b.id === userId) - Number(a.id === userId));
   const actor = actorFor(me);
@@ -1079,7 +1107,9 @@ function applyCommand(source, userId, input, serverNow) {
     const hold = db.holds.find((h) => h.id === cmd.id && h.clientId === me.clientId && h.status === "active" && h.expires > db.now);
     if (me.role !== "client" || !hold) throw Error("Rezerwacja jest niedost\u0119pna.");
     quote(db, hold.clientId, hold.service, hold.intensity, cmd.code, hold.basePrice);
+    if (hold.paymentRequest) return db;
     hold.paymentRequest = { code: cmd.code || "", at: db.now };
+    hold.expires = new Date(Math.max(Date.parse(hold.expires), Date.parse(db.now) + (rules(db).paymentReviewHours || 72) * 36e5)).toISOString();
     db.messages.unshift({ id: uid(), title: "Pro\u015Bba o rozliczenie pakietu", body: `${db.clients.find((c) => c.id === hold.clientId)?.name} \xB7 oczekuje na potwierdzenie wp\u0142aty.`, at: db.now, target: "admin", read: false });
     return db;
   }
@@ -1103,7 +1133,7 @@ function parseTrainer(value) {
 }
 
 // server/relational-store.ts
-var ruleColumns = { renewalDays: "renewal_days", cycleWeeks: "cycle_weeks", validWeeks: "validity_weeks", coachHoldHours: "coach_hold_hours", checkoutMinutes: "checkout_minutes", protectionDays: "protection_days", consultationDays: "consultation_days", startDays: "start_days", substituteHours: "substitute_hours", freezeDays: "freeze_days" };
+var ruleColumns = { renewalDays: "renewal_days", cycleWeeks: "cycle_weeks", validWeeks: "validity_weeks", coachHoldHours: "coach_hold_hours", checkoutMinutes: "checkout_minutes", paymentReviewHours: "payment_review_hours", protectionDays: "protection_days", consultationDays: "consultation_days", startDays: "start_days", substituteHours: "substitute_hours", freezeDays: "freeze_days" };
 var money2 = (n) => n === void 0 ? null : Math.round(n * 100);
 var iso = (value) => value ? new Date(value).toISOString() : void 0;
 var wall = (value) => new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Warsaw", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(value));
@@ -1279,11 +1309,12 @@ function relationalCommitArgs(before, after, actorId, action) {
 
 // server/accounts.ts
 async function publicAction(body, req, services) {
-  const { rpc, auth, hash: hash2 } = services;
+  const { rpc, auth, hash: hash2, credentialProof } = services;
   if (!["publicState", "register", "activation"].includes(body.action)) throw Error("Nieznana operacja.");
   const ip = req.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim() || "unknown";
-  const limit = body.action === "publicState" ? 120 : 5;
-  if (!await rpc("aco_rate_limit", { p_key: await hash2(body.action + ":" + ip), p_max: limit, p_seconds: body.action === "publicState" ? 60 : 3600 })) throw Error("Zbyt wiele pr\xF3b. Spr\xF3buj ponownie p\xF3\u017Aniej.");
+  const phase = body.action === "activation" ? body.password === void 0 ? "verify" : "save" : body.action;
+  const limit = body.action === "publicState" ? 120 : 60;
+  if (!await rpc("aco_rate_limit", { p_key: await hash2(body.action + ":" + phase + ":" + ip), p_max: limit, p_seconds: body.action === "publicState" ? 60 : 3600 })) throw Error("Zbyt wiele pr\xF3b. Spr\xF3buj ponownie p\xF3\u017Aniej.");
   if (body.action === "register" && await rpc("aco_registration_receipt", { p_request: body.requestId, p_hash: await hash2(JSON.stringify(parseRegistration(body.command))) })) return { ok: true };
   const lookupEmail = body.action === "register" ? parseRegistration(body.command).email : body.action === "activation" && typeof body.email === "string" ? body.email : null;
   let snapshot = await rpc("aco_relational_public_load", { p_email: lookupEmail }), db = decodeRelational(snapshot);
@@ -1291,34 +1322,56 @@ async function publicAction(body, req, services) {
   if (body.action === "activation") {
     if (typeof body.email !== "string" || body.email.length > 254 || typeof body.birthDate !== "string" || !validBirthDate(body.birthDate, db.now)) throw Error("Uzupe\u0142nij e-mail i dat\u0119 urodzenia.");
     const email2 = body.email.trim().toLowerCase();
-    if (!await rpc("aco_rate_limit", { p_key: await hash2("activation-email:" + email2), p_max: 6, p_seconds: 3600 })) throw Error("Zbyt wiele pr\xF3b. Spr\xF3buj ponownie p\xF3\u017Aniej.");
+    if (!await rpc("aco_rate_limit", { p_key: await hash2("activation-email:" + phase + ":" + email2), p_max: 8, p_seconds: 3600 })) throw Error("Zbyt wiele pr\xF3b. Spr\xF3buj ponownie p\xF3\u017Aniej.");
     const account = db.accounts.find((a) => a.email === email2 && a.role === "client" && !a.disabled), client = db.clients.find((c) => c.id === account?.clientId);
     if (!account || !client?.invited || !client.prescribed || client.active || client.birthDate !== body.birthDate) throw Error("Nie mo\u017Cna aktywowa\u0107 konta. Sprawd\u017A dane i zatwierdzenie konsultacji. Je\u015Bli konto jest ju\u017C aktywne, przejd\u017A do logowania.");
     if (body.password === void 0) return { ok: true };
     if (typeof body.password !== "string" || body.password.length < 12 || body.password.length > 200) throw Error("Has\u0142o musi mie\u0107 od 12 do 200 znak\xF3w.");
-    const claim = await rpc("aco_claim_activation", { p_email: email2, p_birth_date: body.birthDate, p_request: body.requestId });
+    const proof = await credentialProof(email2 + "\0" + body.password), attemptId = crypto.randomUUID();
+    const claim = await rpc("aco_claim_activation_retry", { p_email: email2, p_birth_date: body.birthDate, p_request: body.requestId, p_proof: proof, p_attempt: attemptId });
     try {
-      if (claim.fresh) {
-        await auth("/admin/users/" + claim.userId, "PUT", { password: body.password, email_confirm: true });
-      } else {
-        const session = await auth("/token?grant_type=password", "POST", { email: email2, password: body.password });
-        if (session.user?.id !== claim.userId) throw Error("Invalid activation identity");
+      let saved = false;
+      if (!claim.fresh) {
+        try {
+          const session = await auth("/token?grant_type=password", "POST", { email: email2, password: body.password });
+          saved = session.user?.id === claim.userId;
+        } catch {
+        }
+      }
+      if (!saved) {
+        if (!claim.canWrite) throw Error("Aktywacja jest w toku. Pon\xF3w pr\xF3b\u0119 za dwie minuty z tym samym has\u0142em.");
+        try {
+          await auth("/admin/users/" + claim.userId, "PUT", { password: body.password, email_confirm: true });
+        } catch (error) {
+          if (error.status && Number(error.status) < 500) await rpc("aco_release_activation_attempt", { p_user: claim.userId, p_attempt: attemptId });
+          throw error;
+        }
       }
       await rpc("aco_complete_activation", { p_user: claim.userId, p_request: claim.requestId });
     } catch {
-      throw Error("Nie uda\u0142o si\u0119 doko\u0144czy\u0107 aktywacji. Spr\xF3buj ponownie z tym samym has\u0142em. Je\u015Bli problem pozostanie, skontaktuj si\u0119 z administratorem.");
+      throw Error("Nie uda\u0142o si\u0119 doko\u0144czy\u0107 aktywacji. Pon\xF3w pr\xF3b\u0119 za dwie minuty z tym samym has\u0142em. Je\u015Bli problem pozostanie, skontaktuj si\u0119 z administratorem.");
     }
     return { ok: true };
   }
   const command = parseRegistration(body.command), email = command.email.trim().toLowerCase();
-  if (!await rpc("aco_rate_limit", { p_key: await hash2("register-email:" + email), p_max: 3, p_seconds: 86400 })) throw Error("Nie zapisano konsultacji: zbyt wiele pr\xF3b dla tego adresu. Skontaktuj si\u0119 z administratorem.");
+  if (!await rpc("aco_rate_limit", { p_key: await hash2("register-email:" + email), p_max: 12, p_seconds: 3600 })) throw Error("Nie zapisano konsultacji: zbyt wiele pr\xF3b dla tego adresu. Skontaktuj si\u0119 z administratorem.");
   if (!validBirthDate(command.birthDate || "", db.now)) throw Error("Podaj poprawn\u0105 dat\u0119 urodzenia.");
   if (command.date > dayAdd(dateOf(new Date(db.now)), rules(db).consultationDays) || !available(db, command.trainerId, command.date, command.hour) || !available(db, command.trainerId, command.date, command.hour + 1)) throw Error("Wybrany termin nie jest dost\u0119pny.");
   if (db.accounts.some((a) => a.email === email)) throw Error("Nie zapisano nowej konsultacji. Sprawd\u017A wcze\u015Bniejsze zg\u0142oszenie lub skontaktuj si\u0119 z administratorem.");
   if (!await rpc("aco_rate_limit", { p_key: await hash2("registration-global"), p_max: 60, p_seconds: 3600 })) throw Error("Zbyt wiele rejestracji. Spr\xF3buj ponownie p\xF3\u017Aniej.");
   await registerAccount(db, command);
-  const user = await auth("/admin/users", "POST", { email, password: crypto.randomUUID() + crypto.randomUUID(), email_confirm: false });
-  const userId = user.id;
+  const registrationHash = await hash2(JSON.stringify(command));
+  const recover = () => rpc("aco_registration_identity", { p_request: body.requestId, p_hash: registrationHash, p_email: email });
+  let userId = await recover();
+  if (!userId) {
+    try {
+      const user = await auth("/admin/users", "POST", { email, password: crypto.randomUUID() + crypto.randomUUID(), email_confirm: false, app_metadata: { aco_registration: { requestId: body.requestId, hash: registrationHash } } });
+      userId = user.id;
+    } catch (error) {
+      userId = await recover();
+      if (!userId) throw error;
+    }
+  }
   if (typeof userId !== "string") throw Error("Nie uda\u0142o si\u0119 utworzy\u0107 konta.");
   let committed = false;
   try {
@@ -1383,17 +1436,21 @@ function createHandler(config, fetcher = fetch) {
     const raw = await result.text();
     const data = raw ? JSON.parse(raw) : null;
     if (!result.ok) {
-      const messages = { "Email already used": "Ten e-mail jest ju\u017C u\u017Cywany.", "Email reserved": "Ten e-mail jest przypisany do trwaj\u0105cej zmiany loginu.", "Email change pending": "Trwa zmiana loginu. Doko\u0144cz j\u0105, zapisuj\u0105c ten sam nowy adres.", "Recurring time is protected for another client": "Ta sta\u0142a godzina jest przypisana innemu klientowi. Wybierz inn\u0105.", "Test tools disabled": "Tryb testowy jest wy\u0142\u0105czony.", "Offset exceeds ten years": "Czas testowy mo\u017Cna przesun\u0105\u0107 maksymalnie o 10 lat.", "Trainer still has clients or unsettled appointments": "Najpierw przenie\u015B klient\xF3w i rozlicz wizyty trenera.", "Existing client history must be preserved": "Ten trener ma histori\u0119 istniej\u0105cych klient\xF3w. Wybierz zachowanie historii.", "Clock changed; reload": "Czas systemu si\u0119 zmieni\u0142. Spr\xF3buj ponownie." };
+      const messages = { "Retry with the same password": "Pon\xF3w aktywacj\u0119 z tym samym has\u0142em co przy pierwszej pr\xF3bie.", "Email already used": "Ten e-mail jest ju\u017C u\u017Cywany.", "Email reserved": "Ten e-mail jest przypisany do trwaj\u0105cej zmiany loginu.", "Email change pending": "Trwa zmiana loginu. Doko\u0144cz j\u0105, zapisuj\u0105c ten sam nowy adres.", "Recurring time is protected for another client": "Ta sta\u0142a godzina jest przypisana innemu klientowi. Wybierz inn\u0105.", "Test tools disabled": "Tryb testowy jest wy\u0142\u0105czony.", "Offset exceeds ten years": "Czas testowy mo\u017Cna przesun\u0105\u0107 maksymalnie o 10 lat.", "Trainer still has clients or unsettled appointments": "Najpierw przenie\u015B klient\xF3w i rozlicz wizyty trenera.", "Existing client history must be preserved": "Ten trener ma histori\u0119 istniej\u0105cych klient\xF3w. Wybierz zachowanie historii.", "Clock changed; reload": "Czas systemu si\u0119 zmieni\u0142. Spr\xF3buj ponownie." };
       throw new ApiError(data?.code === "40001" ? 409 : 403, messages[data?.message] || "Nie uda\u0142o si\u0119 zapisa\u0107 operacji.", data?.code);
     }
     return data;
   }
   async function auth(path, method, body, token) {
-    const response = await fetcher(config.url + "/auth/v1" + path, { method, headers: { apikey: config.serviceKey, Authorization: "Bearer " + (token || config.serviceKey), "Content-Type": "application/json" }, ...body ? { body: JSON.stringify(body) } : {} });
-    if (!response.ok) throw new ApiError(422, "Nie uda\u0142o si\u0119 zapisa\u0107 danych konta.");
+    const response = await fetcher(config.url + "/auth/v1" + path, { signal: AbortSignal.timeout(15e3), method, headers: { apikey: config.serviceKey, Authorization: "Bearer " + (token || config.serviceKey), "Content-Type": "application/json" }, ...body ? { body: JSON.stringify(body) } : {} });
+    if (!response.ok) throw new ApiError(response.status >= 500 ? 503 : 422, "Nie uda\u0142o si\u0119 zapisa\u0107 danych konta.");
     return response.status === 204 ? {} : response.json();
   }
-  const services = { rpc, auth, hash };
+  const credentialProof = async (value) => {
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(config.serviceKey), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    return Array.from(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode("aco-activation:" + value))), (b) => b.toString(16).padStart(2, "0")).join("");
+  };
+  const services = { rpc, auth, hash, credentialProof };
   async function authenticate(req) {
     const authorization = req.headers.get("Authorization") || "";
     if (!/^Bearer [A-Za-z0-9_.-]+$/.test(authorization) || authorization.length > 1e4) throw new ApiError(401, "Zaloguj si\u0119 ponownie.");
@@ -1415,7 +1472,14 @@ function createHandler(config, fetcher = fetch) {
     if (origin && !config.origins.includes(origin)) return new Response(JSON.stringify({ error: "Niedozwolone \u017Ar\xF3d\u0142o \u017C\u0105dania." }), { status: 403, headers });
     if (origin) headers["Access-Control-Allow-Origin"] = origin;
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...headers, "Access-Control-Allow-Methods": "POST", "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-client-info", "Access-Control-Max-Age": "600" } });
-    const reply = (body, status = 200) => new Response(JSON.stringify(body), { status, headers });
+    const reply = (body, status = 200) => {
+      const json = JSON.stringify({ ...body, apiVersion: API_VERSION });
+      if (json.length > 16384 && /\bgzip\b/.test(req.headers.get("Accept-Encoding") || "")) {
+        const stream = new Response(json).body.pipeThrough(new CompressionStream("gzip"));
+        return new Response(stream, { status, headers: { ...headers, "Content-Encoding": "gzip", Vary: "Origin, Accept-Encoding" } });
+      }
+      return new Response(json, { status, headers });
+    };
     if (req.method !== "POST") return reply({ error: "Nieobs\u0142ugiwana metoda." }, 405);
     try {
       if (Number(req.headers.get("Content-Length")) > 3e6) throw new ApiError(413, "Formularz jest zbyt du\u017Cy.");
@@ -1445,7 +1509,7 @@ function createHandler(config, fetcher = fetch) {
       } catch {
         throw new ApiError(400, "Nieprawid\u0142owy formularz.");
       }
-      const allowed = { adminEmail: ["requestId", "accountId", "email", "confirmation"], accountLifecycle: ["requestId", "accountId", "mode", "confirmation"], testClock: ["requestId", "target"], state: [], quote: ["id", "code"], command: ["requestId", "command"], publicState: [], register: ["requestId", "command"], activation: ["email", "birthDate", "password", "requestId"], trainer: ["requestId", "input"], resetPassword: ["requestId", "accountId"], changePassword: ["requestId", "oldPassword", "password"] };
+      const allowed = { adminEmail: ["requestId", "accountId", "email", "confirmation"], accountLifecycle: ["requestId", "accountId", "mode", "confirmation"], testClock: ["requestId", "target"], state: ["cacheTag"], quote: ["id", "code"], command: ["requestId", "command"], publicState: [], register: ["requestId", "command"], activation: ["email", "birthDate", "password", "requestId"], trainer: ["requestId", "input"], resetPassword: ["requestId", "accountId"], changePassword: ["requestId", "oldPassword", "password"] };
       if (!body || typeof body !== "object" || Array.isArray(body) || !Object.hasOwn(allowed, body.action) || Object.keys(body).some((k) => k !== "action" && !allowed[body.action].includes(k))) throw new ApiError(400, "Nieprawid\u0142owe \u017C\u0105danie.");
       if (["publicState", "register", "activation"].includes(body.action)) {
         if ((body.action === "register" || body.action === "activation" && body.password !== void 0) && !uuid.test(body.requestId)) throw new ApiError(400, "Brak identyfikatora operacji.");
@@ -1455,7 +1519,14 @@ function createHandler(config, fetcher = fetch) {
           throw error instanceof ApiError ? error : new ApiError(422, error instanceof Error ? error.message : "Nieprawid\u0142owe dane.");
         }
       }
-      const identity = await authenticate(req), mutating = !["state", "quote"].includes(body.action);
+      const identity = await authenticate(req);
+      let stamp;
+      if (body.action === "state") {
+        if (body.cacheTag !== void 0 && (typeof body.cacheTag !== "string" || body.cacheTag.length > 64)) throw new ApiError(400, "Nieprawid\u0142owy znacznik danych.");
+        stamp = await rpc("aco_state_stamp", { p_actor: identity.id, p_session: identity.sessionId });
+        if (stamp && body.cacheTag === stamp.tag) return reply({ unchanged: true, cacheTag: stamp.tag, now: stamp.now, accountId: identity.id });
+      }
+      const mutating = !["state", "quote"].includes(body.action);
       if (mutating && !uuid.test(body.requestId)) throw new ApiError(400, "Brak identyfikatora operacji.");
       const args = { p_actor: identity.id, p_session: identity.sessionId, p_request: mutating ? body.requestId : null };
       const requestHash = mutating ? await hash(JSON.stringify(body)) : "";
@@ -1527,7 +1598,7 @@ function createHandler(config, fetcher = fetch) {
             if (!uuid.test(body.accountId) || !["archive", "purge"].includes(body.mode) || body.mode === "purge" && body.confirmation !== "USU\u0143") throw new ApiError(422, "Potwierd\u017A spos\xF3b usuni\u0119cia konta.");
             const target = db.accounts.find((a) => a.id === body.accountId);
             if (target?.role === "admin" || target?.id === me.id) throw new ApiError(403, "Nie mo\u017Cna usun\u0105\u0107 konta administratora.");
-            if (target?.role === "trainer" && (db.clients.some((c) => c.trainerId === target.trainerId) || db.sessions.some((s) => s.trainerId === target.trainerId && s.status === "scheduled") || db.holds.some((h) => h.trainerId === target.trainerId && h.status === "active" && h.expires > db.now))) throw new ApiError(422, "Najpierw przenie\u015B klient\xF3w i rozlicz lub przenie\u015B wszystkie wizyty trenera.");
+            if (target?.role === "trainer" && (db.clients.some((c) => !c.archived && c.trainerId === target.trainerId) || db.sessions.some((s) => s.trainerId === target.trainerId && s.status === "scheduled") || db.holds.some((h) => h.trainerId === target.trainerId && h.status === "active" && h.expires > db.now))) throw new ApiError(422, "Najpierw przenie\u015B klient\xF3w i rozlicz lub przenie\u015B wszystkie wizyty trenera.");
             if (body.mode === "purge" && target?.role === "trainer" && db.sessions.some((s) => s.trainerId === target.trainerId)) throw new ApiError(422, "Trener ma histori\u0119 spotka\u0144 istniej\u0105cych klient\xF3w. Wybierz zachowanie historii albo najpierw usu\u0144 te testowe konta klient\xF3w.");
             const result = await rpc("aco_account_lifecycle", { ...args, p_hash: requestHash, p_target: body.accountId, p_mode: body.mode });
             if (result.authUserId) {
@@ -1548,7 +1619,7 @@ function createHandler(config, fetcher = fetch) {
             throw new ApiError(422, error.message);
           }
         }
-        if (body.action === "state") return reply({ accountId: me.id, revision: snapshot.revision, db: projectState(db, me.id) });
+        if (body.action === "state") return reply({ cacheTag: stamp?.tag, accountId: me.id, revision: snapshot.revision, db: projectState(db, me.id) });
         if (snapshot.receipt) {
           if (snapshot.receipt.hash !== requestHash) throw new ApiError(409, "Identyfikator wykorzystano do innej operacji.");
           return reply({ accountId: me.id, revision: snapshot.revision, db: projectState(db, me.id), replayed: true, ...body.action === "resetPassword" && me.role === "admin" ? { temporary: await temporaryPassword() } : {} });
