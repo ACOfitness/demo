@@ -8,13 +8,15 @@ export interface AccountServices {
  rpc<T>(name:string,args:Record<string,unknown>):Promise<T>;
  auth(path:string,method:string,body?:unknown,token?:string):Promise<any>;
  hash(value:string):Promise<string>;
+ credentialProof(value:string):Promise<string>;
 }
 export async function publicAction(body:any,req:Request,services:AccountServices){
- const {rpc,auth,hash}=services;
+ const {rpc,auth,hash,credentialProof}=services;
  if(!['publicState','register','activation'].includes(body.action))throw Error('Nieznana operacja.');
  const ip=req.headers.get('x-forwarded-for')?.split(',').at(-1)?.trim()||'unknown';
- const limit=body.action==='publicState'?120:5;
- if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash(body.action+':'+ip),p_max:limit,p_seconds:body.action==='publicState'?60:3600}))throw Error('Zbyt wiele prób. Spróbuj ponownie później.');
+ const phase=body.action==='activation'?(body.password===undefined?'verify':'save'):body.action;
+ const limit=body.action==='publicState'?120:60;
+ if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash(body.action+':'+phase+':'+ip),p_max:limit,p_seconds:body.action==='publicState'?60:3600}))throw Error('Zbyt wiele prób. Spróbuj ponownie później.');
  if(body.action==='register'&&await rpc<boolean>('aco_registration_receipt',{p_request:body.requestId,p_hash:await hash(JSON.stringify(parseRegistration(body.command)))}))return {ok:true};
  const lookupEmail=body.action==='register'?parseRegistration(body.command).email:body.action==='activation'&&typeof body.email==='string'?body.email:null;
  let snapshot=await rpc<Snapshot>('aco_relational_public_load',{p_email:lookupEmail}),db=decode(snapshot);
@@ -22,36 +24,45 @@ export async function publicAction(body:any,req:Request,services:AccountServices
  if(body.action==='activation'){
   if(typeof body.email!=='string'||body.email.length>254||typeof body.birthDate!=='string'||!validBirthDate(body.birthDate,db.now))throw Error('Uzupełnij e-mail i datę urodzenia.');
   const email=body.email.trim().toLowerCase();
-  if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash('activation-email:'+email),p_max:6,p_seconds:3600}))throw Error('Zbyt wiele prób. Spróbuj ponownie później.');
+  if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash('activation-email:'+phase+':'+email),p_max:8,p_seconds:3600}))throw Error('Zbyt wiele prób. Spróbuj ponownie później.');
   const account=db.accounts.find(a=>a.email===email&&a.role==='client'&&!a.disabled),client=db.clients.find(c=>c.id===account?.clientId);
   if(!account||!client?.invited||!client.prescribed||client.active||client.birthDate!==body.birthDate)throw Error('Nie można aktywować konta. Sprawdź dane i zatwierdzenie konsultacji. Jeśli konto jest już aktywne, przejdź do logowania.');
   if(body.password===undefined)return {ok:true};
   if(typeof body.password!=='string'||body.password.length<12||body.password.length>200)throw Error('Hasło musi mieć od 12 do 200 znaków.');
-  // Database row lock grants exactly one request permission to write the Auth password.
-  const claim=await rpc<{userId:string;requestId:string;fresh:boolean}>('aco_claim_activation',{p_email:email,p_birth_date:body.birthDate,p_request:body.requestId});
+  // A secret-key proof binds retries to the first password without storing it.
+  const proof=await credentialProof(email+'\0'+body.password),attemptId=crypto.randomUUID();
+  const claim=await rpc<{userId:string;requestId:string;fresh:boolean;canWrite:boolean}>('aco_claim_activation_retry',{p_email:email,p_birth_date:body.birthDate,p_request:body.requestId,p_proof:proof,p_attempt:attemptId});
   try{
-   if(claim.fresh){
-    await auth('/admin/users/'+claim.userId,'PUT',{password:body.password,email_confirm:true});
-   }else{
-    // Recovery after an uncertain result: prove the previously saved password.
-    // Never write a second password, even for the same request ID.
-    const session=await auth('/token?grant_type=password','POST',{email,password:body.password});
-    if(session.user?.id!==claim.userId)throw Error('Invalid activation identity');
+   let saved=false;
+   if(!claim.fresh){try{const session=await auth('/token?grant_type=password','POST',{email,password:body.password});saved=session.user?.id===claim.userId}catch{/* Auth may not have received the first write. */}}
+   if(!saved){
+    if(!claim.canWrite)throw Error('Aktywacja jest w toku. Ponów próbę za dwie minuty z tym samym hasłem.');
+    try{await auth('/admin/users/'+claim.userId,'PUT',{password:body.password,email_confirm:true})}
+    catch(error){
+     // A received rejection is definitive; an uncertain network result retains the lease.
+     if((error as {status?:number}).status&&Number((error as {status:number}).status)<500)await rpc('aco_release_activation_attempt',{p_user:claim.userId,p_attempt:attemptId});
+     throw error;
+    }
    }
    await rpc('aco_complete_activation',{p_user:claim.userId,p_request:claim.requestId});
-  }catch{throw Error('Nie udało się dokończyć aktywacji. Spróbuj ponownie z tym samym hasłem. Jeśli problem pozostanie, skontaktuj się z administratorem.');}
+  }catch{throw Error('Nie udało się dokończyć aktywacji. Ponów próbę za dwie minuty z tym samym hasłem. Jeśli problem pozostanie, skontaktuj się z administratorem.');}
   return {ok:true};
  }
  const command=parseRegistration(body.command),email=command.email.trim().toLowerCase();
- if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash('register-email:'+email),p_max:3,p_seconds:86400}))throw Error('Nie zapisano konsultacji: zbyt wiele prób dla tego adresu. Skontaktuj się z administratorem.');
+ if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash('register-email:'+email),p_max:12,p_seconds:3600}))throw Error('Nie zapisano konsultacji: zbyt wiele prób dla tego adresu. Skontaktuj się z administratorem.');
  if(!validBirthDate(command.birthDate||'',db.now))throw Error('Podaj poprawną datę urodzenia.');
  if(command.date>dayAdd(dateOf(new Date(db.now)),rules(db).consultationDays)||!available(db,command.trainerId,command.date,command.hour)||!available(db,command.trainerId,command.date,command.hour+1))throw Error('Wybrany termin nie jest dostępny.');
  if(db.accounts.some(a=>a.email===email))throw Error('Nie zapisano nowej konsultacji. Sprawdź wcześniejsze zgłoszenie lub skontaktuj się z administratorem.');
  if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash('registration-global'),p_max:60,p_seconds:3600}))throw Error('Zbyt wiele rejestracji. Spróbuj ponownie później.');
  // Validate all scheduling rules before provisioning an Auth identity.
  await registerAccount(db,command);
- const user=await auth('/admin/users','POST',{email,password:crypto.randomUUID()+crypto.randomUUID(),email_confirm:false});
- const userId=user.id;
+ const registrationHash=await hash(JSON.stringify(command));
+ const recover=()=>rpc<string|null>('aco_registration_identity',{p_request:body.requestId,p_hash:registrationHash,p_email:email});
+ let userId=await recover();
+ if(!userId){
+  try{const user=await auth('/admin/users','POST',{email,password:crypto.randomUUID()+crypto.randomUUID(),email_confirm:false,app_metadata:{aco_registration:{requestId:body.requestId,hash:registrationHash}}});userId=user.id}
+  catch(error){userId=await recover();if(!userId)throw error}
+ }
  if(typeof userId!=='string')throw Error('Nie udało się utworzyć konta.');
  let committed=false;
  try{

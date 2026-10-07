@@ -1,3 +1,4 @@
+import {API_VERSION} from '../src/api-version';
 import {quote} from '../src/business';
 import {canSee} from '../src/domain';
 import {publicAction,trainerAction} from './accounts';
@@ -16,15 +17,16 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
   const result=await fetcher(config.url+'/rest/v1/rpc/'+name,{method:'POST',headers:{apikey:config.serviceKey,Authorization:'Bearer '+config.serviceKey,'Content-Type':'application/json'},body:JSON.stringify(args)});
   const raw=await result.text();
   const data=raw?JSON.parse(raw):null;
-  if(!result.ok){const messages:Record<string,string>={'Email already used':'Ten e-mail jest już używany.','Email reserved':'Ten e-mail jest przypisany do trwającej zmiany loginu.','Email change pending':'Trwa zmiana loginu. Dokończ ją, zapisując ten sam nowy adres.','Recurring time is protected for another client':'Ta stała godzina jest przypisana innemu klientowi. Wybierz inną.','Test tools disabled':'Tryb testowy jest wyłączony.','Offset exceeds ten years':'Czas testowy można przesunąć maksymalnie o 10 lat.','Trainer still has clients or unsettled appointments':'Najpierw przenieś klientów i rozlicz wizyty trenera.','Existing client history must be preserved':'Ten trener ma historię istniejących klientów. Wybierz zachowanie historii.','Clock changed; reload':'Czas systemu się zmienił. Spróbuj ponownie.'};throw new ApiError(data?.code==='40001'?409:403,messages[data?.message]||'Nie udało się zapisać operacji.',data?.code);}
+  if(!result.ok){const messages:Record<string,string>={'Retry with the same password':'Ponów aktywację z tym samym hasłem co przy pierwszej próbie.','Email already used':'Ten e-mail jest już używany.','Email reserved':'Ten e-mail jest przypisany do trwającej zmiany loginu.','Email change pending':'Trwa zmiana loginu. Dokończ ją, zapisując ten sam nowy adres.','Recurring time is protected for another client':'Ta stała godzina jest przypisana innemu klientowi. Wybierz inną.','Test tools disabled':'Tryb testowy jest wyłączony.','Offset exceeds ten years':'Czas testowy można przesunąć maksymalnie o 10 lat.','Trainer still has clients or unsettled appointments':'Najpierw przenieś klientów i rozlicz wizyty trenera.','Existing client history must be preserved':'Ten trener ma historię istniejących klientów. Wybierz zachowanie historii.','Clock changed; reload':'Czas systemu się zmienił. Spróbuj ponownie.'};throw new ApiError(data?.code==='40001'?409:403,messages[data?.message]||'Nie udało się zapisać operacji.',data?.code);}
   return data as T;
  }
  async function auth(path:string,method:string,body?:unknown,token?:string){
-  const response=await fetcher(config.url+'/auth/v1'+path,{method,headers:{apikey:config.serviceKey,Authorization:'Bearer '+(token||config.serviceKey),'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
-  if(!response.ok)throw new ApiError(422,'Nie udało się zapisać danych konta.');
+  const response=await fetcher(config.url+'/auth/v1'+path,{signal:AbortSignal.timeout(15000),method,headers:{apikey:config.serviceKey,Authorization:'Bearer '+(token||config.serviceKey),'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+  if(!response.ok)throw new ApiError(response.status>=500?503:422,'Nie udało się zapisać danych konta.');
   return response.status===204?{}:response.json();
  }
- const services={rpc,auth,hash};
+ const credentialProof=async(value:string)=>{const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(config.serviceKey),{name:'HMAC',hash:'SHA-256'},false,['sign']);return Array.from(new Uint8Array(await crypto.subtle.sign('HMAC',key,new TextEncoder().encode('aco-activation:'+value))),b=>b.toString(16).padStart(2,'0')).join('')};
+ const services={rpc,auth,hash,credentialProof};
  async function authenticate(req:Request):Promise<Identity>{
   const authorization=req.headers.get('Authorization')||'';
   if(!/^Bearer [A-Za-z0-9_.-]+$/.test(authorization)||authorization.length>10000)throw new ApiError(401,'Zaloguj się ponownie.');
@@ -42,7 +44,7 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
   if(origin&&!config.origins.includes(origin))return new Response(JSON.stringify({error:'Niedozwolone źródło żądania.'}),{status:403,headers});
   if(origin)headers['Access-Control-Allow-Origin']=origin;
   if(req.method==='OPTIONS')return new Response(null,{status:204,headers:{...headers,'Access-Control-Allow-Methods':'POST','Access-Control-Allow-Headers':'authorization, apikey, content-type, x-client-info','Access-Control-Max-Age':'600'}});
-  const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers});
+  const reply=(body:unknown,status=200)=>{const json=JSON.stringify({...body as object,apiVersion:API_VERSION});if(json.length>16384&&/\bgzip\b/.test(req.headers.get('Accept-Encoding')||'')){const stream=new Response(json).body!.pipeThrough(new CompressionStream('gzip'));return new Response(stream,{status,headers:{...headers,'Content-Encoding':'gzip',Vary:'Origin, Accept-Encoding'}})}return new Response(json,{status,headers})};
   if(req.method!=='POST')return reply({error:'Nieobsługiwana metoda.'},405);
   try{
    if(Number(req.headers.get('Content-Length'))>3000000)throw new ApiError(413,'Formularz jest zbyt duży.');
@@ -52,13 +54,16 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
    while(true){const part=await reader.read();if(part.done)break;size+=part.value.byteLength;if(size>3000000){await reader.cancel();throw new ApiError(413,'Formularz jest zbyt duży.')}chunks.push(part.value)}
    const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length}
    let body;try{body=JSON.parse(new TextDecoder().decode(bytes))}catch{throw new ApiError(400,'Nieprawidłowy formularz.')}
-   const allowed:Record<string,string[]>={adminEmail:['requestId','accountId','email','confirmation'],accountLifecycle:['requestId','accountId','mode','confirmation'],testClock:['requestId','target'],state:[],quote:['id','code'],command:['requestId','command'],publicState:[],register:['requestId','command'],activation:['email','birthDate','password','requestId'],trainer:['requestId','input'],resetPassword:['requestId','accountId'],changePassword:['requestId','oldPassword','password']};
+   const allowed:Record<string,string[]>={adminEmail:['requestId','accountId','email','confirmation'],accountLifecycle:['requestId','accountId','mode','confirmation'],testClock:['requestId','target'],state:['cacheTag'],quote:['id','code'],command:['requestId','command'],publicState:[],register:['requestId','command'],activation:['email','birthDate','password','requestId'],trainer:['requestId','input'],resetPassword:['requestId','accountId'],changePassword:['requestId','oldPassword','password']};
    if(!body||typeof body!=='object'||Array.isArray(body)||!Object.hasOwn(allowed,body.action)||Object.keys(body).some(k=>k!=='action'&&!allowed[body.action].includes(k)))throw new ApiError(400,'Nieprawidłowe żądanie.');
    if(['publicState','register','activation'].includes(body.action)){
     if((body.action==='register'||body.action==='activation'&&body.password!==undefined)&&!uuid.test(body.requestId))throw new ApiError(400,'Brak identyfikatora operacji.');
     try{return reply(await publicAction(body,req,services))}catch(error){throw error instanceof ApiError?error:new ApiError(422,error instanceof Error?error.message:'Nieprawidłowe dane.')}
    }
-   const identity=await authenticate(req),mutating=!['state','quote'].includes(body.action);
+   const identity=await authenticate(req);
+   let stamp:{tag:string;now:string}|undefined;
+   if(body.action==='state'){if(body.cacheTag!==undefined&&(typeof body.cacheTag!=='string'||body.cacheTag.length>64))throw new ApiError(400,'Nieprawidłowy znacznik danych.');stamp=await rpc('aco_state_stamp',{p_actor:identity.id,p_session:identity.sessionId});if(stamp&&body.cacheTag===stamp.tag)return reply({unchanged:true,cacheTag:stamp.tag,now:stamp.now,accountId:identity.id})}
+   const mutating=!['state','quote'].includes(body.action);
    if(mutating&&!uuid.test(body.requestId))throw new ApiError(400,'Brak identyfikatora operacji.');
    const args={p_actor:identity.id,p_session:identity.sessionId,p_request:mutating?body.requestId:null};
    const requestHash=mutating?await hash(JSON.stringify(body)):'';
@@ -112,7 +117,7 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
       if(!uuid.test(body.accountId)||!['archive','purge'].includes(body.mode)||body.mode==='purge'&&body.confirmation!=='USUŃ')throw new ApiError(422,'Potwierdź sposób usunięcia konta.');
       const target=db.accounts.find(a=>a.id===body.accountId);
       if(target?.role==='admin'||target?.id===me.id)throw new ApiError(403,'Nie można usunąć konta administratora.');
-      if(target?.role==='trainer'&&(db.clients.some(c=>c.trainerId===target.trainerId)||db.sessions.some(s=>s.trainerId===target.trainerId&&s.status==='scheduled')||db.holds.some(h=>h.trainerId===target.trainerId&&h.status==='active'&&h.expires>db.now)))throw new ApiError(422,'Najpierw przenieś klientów i rozlicz lub przenieś wszystkie wizyty trenera.');
+      if(target?.role==='trainer'&&(db.clients.some(c=>!c.archived&&c.trainerId===target.trainerId)||db.sessions.some(s=>s.trainerId===target.trainerId&&s.status==='scheduled')||db.holds.some(h=>h.trainerId===target.trainerId&&h.status==='active'&&h.expires>db.now)))throw new ApiError(422,'Najpierw przenieś klientów i rozlicz lub przenieś wszystkie wizyty trenera.');
       if(body.mode==='purge'&&target?.role==='trainer'&&db.sessions.some(s=>s.trainerId===target.trainerId))throw new ApiError(422,'Trener ma historię spotkań istniejących klientów. Wybierz zachowanie historii albo najpierw usuń te testowe konta klientów.');
       const result=await rpc<{authUserId?:string}>('aco_account_lifecycle',{...args,p_hash:requestHash,p_target:body.accountId,p_mode:body.mode});
       if(result.authUserId){
@@ -129,7 +134,7 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
      if(!hold||!client||!canSee(db,{role:me.role,trainerId:me.trainerId||'',clientId:me.clientId||''},client)||typeof body.code!=='string'||body.code.length>100)throw new ApiError(403,'Brak dostępu do rezerwacji.');
      try{const result=quote(db,hold.clientId,hold.service,hold.intensity,body.code,hold.basePrice);return reply({base:result.base,total:result.total,percent:result.percent})}catch(error){throw new ApiError(422,(error as Error).message)}
     }
-    if(body.action==='state')return reply({accountId:me.id,revision:snapshot.revision,db:projectState(db,me.id)});
+    if(body.action==='state')return reply({cacheTag:stamp?.tag,accountId:me.id,revision:snapshot.revision,db:projectState(db,me.id)});
     if(snapshot.receipt){if(snapshot.receipt.hash!==requestHash)throw new ApiError(409,'Identyfikator wykorzystano do innej operacji.');return reply({accountId:me.id,revision:snapshot.revision,db:projectState(db,me.id),replayed:true,...(body.action==='resetPassword'&&me.role==='admin'?{temporary:await temporaryPassword()}:{})})}
     let next;let extra:Record<string,unknown>={};
     try{

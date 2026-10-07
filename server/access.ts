@@ -31,6 +31,7 @@ export function projectState(source:Database,userId:string):Database {
  const letters=(source.letters||[]).filter(m=>m.from===me.id||m.to===me.id);
  const contacts=new Set([me.id,...recipients(source,actor).map(a=>a.id)]);
  for(const m of letters){contacts.add(m.from);contacts.add(m.to)}
+ const visibleNotices=new Set(notifications(source,actor).map(n=>n.id));
  const out:Database={recurringBusy:[...(source.recurringBusy||[]),...source.packages.filter(p=>!managed.has(p.clientId)&&!p.frozen&&p.protectionUntil>dateOf(new Date(source.now))).flatMap(p=>p.slots.map(s=>({...s,trainerId:source.clients.find(c=>c.id===p.clientId)?.trainerId||''}))),...source.holds.filter(h=>!managed.has(h.clientId)&&h.status==='active'&&h.expires>source.now).flatMap(h=>h.slots.map(s=>({...s,trainerId:h.trainerId})))],version:1,now:source.now,timeOffsetSeconds:source.timeOffsetSeconds,clockVersion:source.clockVersion,testToolsEnabled:admin&&source.testToolsEnabled,
  accounts:source.accounts.filter(a=>admin||contacts.has(a.id)).map(a=>({...safeAccount(a,a.id===me.id),...(admin?{pendingEmail:a.pendingEmail}:{})})),
  clients:source.clients.filter(c=>managed.has(c.id)||historical.has(c.id)).map(c=>managed.has(c.id)?{
@@ -52,7 +53,7 @@ export function projectState(source:Database,userId:string):Database {
  sales:source.sales.filter(s=>admin||me.role==='client'&&s.clientId===me.clientId).map(s=>structuredClone(s)),
  substitutions:source.substitutions.filter(s=>managed.has(s.clientId)&&s.until>source.now).map(s=>structuredClone(s)),
  blocks:occupiedSlots(source,new Set(sessions.map(s=>s.id)),new Set(source.holds.filter(h=>managed.has(h.clientId)).map(h=>h.id)),managed),
- messages:source.messages.filter(m=>notifications(source,actor).some(n=>n.id===m.id)).map(m=>structuredClone(m)),
+ messages:source.messages.filter(m=>visibleNotices.has(m.id)).map(m=>structuredClone(m)),
  letters:letters.map(m=>structuredClone(m)),noticeReads:{[me.id]:[...(source.noticeReads?.[me.id]||[])]},
  locations:structuredClone(source.locations),audit:admin?structuredClone(source.audit):[],settings:structuredClone(source.settings),
  productCopies:structuredClone(source.productCopies),
@@ -75,11 +76,14 @@ function occupiedSlots(source:Database,visibleSessions:Set<string>,visibleHolds=
  for(const s of source.sessions)if(!visibleSessions.has(s.id)&&s.status==='scheduled')for(let h=s.hour;h<s.hour+(s.kind==='consultation'?2:1);h++)out.push({id:`busy:${s.trainerId}:${s.date}:${h}`,trainerId:s.trainerId,date:s.date,hour:h,visibility:'busy'});
  for(const h of source.holds)if(!visibleHolds.has(h.id)&&h.status==='active'&&h.expires>source.now)for(const d of h.dates)out.push({id:`busy:${h.trainerId}:${d.date}:${d.hour}`,trainerId:h.trainerId,date:d.date,hour:d.hour,visibility:'busy'});
  const today=dateOf(new Date(source.now));
+ const trainerByClient=new Map(source.clients.map(c=>[c.id,c.trainerId]));
+ const released=new Set<string>();
+ for(const s of source.sessions){if(s.status.startsWith('cancelled'))released.add(`${s.packageId}:${s.date}:${s.hour}`);if(s.original)released.add(`${s.packageId}:${s.original.slice(0,10)}:${Number(s.original.slice(11,13))}`)}
  const days=visibleClients.size?366:rules(source).consultationDays+1;
  for(const p of source.packages)if(!visibleClients.has(p.clientId)&&p.protectionUntil>today){
-  const trainerId=source.clients.find(c=>c.id===p.clientId)?.trainerId;if(!trainerId)continue;
+  const trainerId=trainerByClient.get(p.clientId);if(!trainerId)continue;
   for(let n=0;n<days;n++){const date=dayAdd(today,n);if(date<p.start)continue;
-   for(const slot of p.slots)if(slot.day===dayIndex(date)&&!source.sessions.some(s=>s.packageId===p.id&&((s.date===date&&s.hour===slot.hour&&s.status.startsWith('cancelled'))||s.original===`${date} ${String(slot.hour).padStart(2,'0')}:00`)))out.push({id:`protected:${trainerId}:${date}:${slot.hour}`,trainerId,date,hour:slot.hour,visibility:'busy'});
+   for(const slot of p.slots)if(slot.day===dayIndex(date)&&!released.has(`${p.id}:${date}:${slot.hour}`))out.push({id:`protected:${trainerId}:${date}:${slot.hour}`,trainerId,date,hour:slot.hour,visibility:'busy'});
   }
  }
  for(const h of source.holds)if(!visibleClients.has(h.clientId)&&h.status==='active'&&h.expires>source.now){for(let n=0;n<days;n++){const date=dayAdd(today,n);if(date<h.start)continue;for(const slot of h.slots)if(slot.day===dayIndex(date)&&!h.dates.some(d=>d.original===`${date} ${String(slot.hour).padStart(2,'0')}:00`))out.push({id:`protected:${h.trainerId}:${date}:${slot.hour}`,trainerId:h.trainerId,date,hour:slot.hour,visibility:'busy'})}}

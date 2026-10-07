@@ -1,7 +1,7 @@
 import {quote} from '../src/business';
 import type {Database} from '../src/auth';
 import {actorFor} from '../src/auth';
-import {execute, type Command, defaultRules,uid} from '../src/domain';
+import {execute, type Command, defaultRules,rules as effectiveRules,uid} from '../src/domain';
 import {manage, managementTypes} from '../src/management';
 import {identityAccount} from './access';
 
@@ -15,7 +15,7 @@ const object=(fields:Record<string,Check>):Check=>v=>v!==null&&typeof v==='objec
 const id=text(100,1),day=number(0,6,true),hour=number(0,23,true),service=choice('personal','physio');
 const date:Check=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&v>='1900-01-01'&&v<='2200-12-31'&&Number.isFinite(Date.parse(v+'T12:00:00Z'))&&new Date(v+'T12:00:00Z').toISOString().slice(0,10)===v;
 const dates=array(object({date,hour,original:optional(text(100))}),364);
-const rules=object(Object.fromEntries(Object.keys(defaultRules).map(k=>[k,number(1,k.endsWith('Weeks')?52:366,true)])));
+const rules=object(Object.fromEntries(Object.keys(defaultRules).map(k=>[k,k==='paymentReviewHours'?optional(number(1,366,true)):number(1,k.endsWith('Weeks')?52:366,true)])));
 const prices=object({'1':number(.01,1000000),'2':number(.01,1000000),'3':number(.01,1000000)});
 const photo:Check=v=>typeof v==='string'&&(v===''||v.length<=2900000&&/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v));
 const fields:Record<string,Record<string,Check>>={
@@ -55,6 +55,7 @@ export function applyCommand(source:Database,userId:string,input:unknown,serverN
  const me=identityAccount(db,userId);
  if(me.mustChangePassword)throw Error('Najpierw zmień hasło tymczasowe.');
  const cmd=parseCommand(input);
+ if(cmd.type==='settings'&&cmd.rules&&!cmd.rules.paymentReviewHours)cmd.rules.paymentReviewHours=effectiveRules(db).paymentReviewHours||72;
  // Client-supplied "payment complete" can never create paid entries.
  if(cmd.type==='payHold'&&me.role!=='admin')throw Error('Opłatę może potwierdzić wyłącznie administrator.');
  // Bind the legacy management engine to the verified account, including multi-admin teams.
@@ -64,7 +65,9 @@ export function applyCommand(source:Database,userId:string,input:unknown,serverN
   const hold=db.holds.find(h=>h.id===cmd.id&&h.clientId===me.clientId&&h.status==='active'&&h.expires>db.now);
   if(me.role!=='client'||!hold)throw Error('Rezerwacja jest niedostępna.');
   quote(db,hold.clientId,hold.service,hold.intensity,cmd.code,hold.basePrice);
+  if(hold.paymentRequest)return db;
   hold.paymentRequest={code:cmd.code||'',at:db.now};
+  hold.expires=new Date(Math.max(Date.parse(hold.expires),Date.parse(db.now)+(effectiveRules(db).paymentReviewHours||72)*3600000)).toISOString();
   db.messages.unshift({id:uid(),title:'Prośba o rozliczenie pakietu',body:`${db.clients.find(c=>c.id===hold.clientId)?.name} · oczekuje na potwierdzenie wpłaty.`,at:db.now,target:'admin',read:false});
   return db;
  }
