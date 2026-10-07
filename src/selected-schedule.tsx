@@ -1,9 +1,9 @@
 import React from 'react';
 import {useApp,days} from './context';
-import {at,currentPackage,hourLabel,labelDate,statusLabels} from './domain';
+import {at,dateOf,currentPackage,hourLabel,labelDate,statusLabels} from './domain';
 import {sessionOrder} from './schedule-model';
 export function SelectedSchedule({clientId,compact=false,summaryOnly=false}:{clientId:string;compact?:boolean;summaryOnly?:boolean}){
- const {db,open}=useApp();const hold=db.holds.find(h=>h.clientId===clientId&&h.status==='active'&&h.expires>db.now),pack=currentPackage(db,clientId);
+ const {db,open}=useApp();const hold=db.holds.find(h=>h.clientId===clientId&&h.status==='active'&&h.expires>db.now),pack=db.packages.filter(p=>p.clientId===clientId&&p.start>dateOf(new Date(db.now))).sort((a,b)=>a.start.localeCompare(b.start))[0]||currentPackage(db,clientId);
  if(!hold&&!pack)return null;
  const slots=hold?.slots||pack!.slots;
  const dates=hold?hold.dates.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.hour-b.hour):db.sessions.filter(s=>s.packageId===pack!.id&&s.status==='scheduled').sort(sessionOrder);
