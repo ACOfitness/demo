@@ -5,8 +5,11 @@ controls and tests, not merely hiding actions in React.
 
 - Browser input is untrusted. Never accept a supplied role, trainer identity,
   account owner, payment success, price, earned amount or test clock as authority.
-- Use Supabase Auth to verify identity; activation and recovery require email
-  possession. Date of birth is business data, never an authentication secret.
+- Use Supabase Auth to verify signed-in identity. Per the owner's explicit decision,
+  initial activation uses approved status, email and date of birth, without email
+  possession. Date of birth is not a strong authentication secret. Rate limits,
+  a backend HMAC credential proof and exclusive short-lived write leases reduce
+  abuse and make retries safe, but do not remove this accepted identity risk.
 - Keep auth identities, private notes, payroll and financial records separate.
 - No service-role or database credentials in browser bundles, source control,
   logs, command output or URLs. Publishable keys are allowed only with tested RLS.
