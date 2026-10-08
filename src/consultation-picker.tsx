@@ -3,13 +3,13 @@ import {WeekGrid,WeekNav} from './week-grid';
 import React,{useState,useRef,useEffect} from 'react';
 import {Check,ChevronLeft,ChevronRight,Clock,CalendarDays} from 'lucide-react';
 import {Avatar,days} from './context';
-import {State,Trainer,available,dateOf,dayAdd,dayIndex,hourLabel,labelDate,money,locationsOf,rules,serviceName,trainerHours,weekOf} from './domain';
+import {State,Trainer,bookingLeadAllowed,available,dateOf,dayAdd,dayIndex,hourLabel,labelDate,money,locationsOf,rules,serviceName,trainerHours,weekOf} from './domain';
 
 export function consultationHours(db:State,trainer:Trainer,date:string){
  const today=dateOf(new Date(db.now));
  if(date<today||date>dayAdd(today,rules(db).consultationDays))return [];
  const hours=trainerHours(trainer,dayIndex(date));
- return [...new Set(hours)].filter(h=>h<23&&hours.includes(h+1)&&!db.blocks.some(b=>b.trainerId===trainer.id&&b.date===date&&b.visibility==='hidden'&&(b.hour===h||b.hour===h+1))).sort((a,b)=>a-b);
+ return [...new Set(hours)].filter(h=>bookingLeadAllowed(db,'consultation',date,h)&&h<23&&hours.includes(h+1)&&!db.blocks.some(b=>b.trainerId===trainer.id&&b.date===date&&b.visibility==='hidden'&&(b.hour===h||b.hour===h+1))).sort((a,b)=>a-b);
 }
 export function ConsultationPicker({db,trainers,trainerId,date,hour,onTrainer,onSlot}:{db:State;trainers:Trainer[];trainerId:string;date:string;hour:number;onTrainer:(id:string)=>void;onSlot:(date:string,hour:number)=>void}){
  const [choosing,setChoosing]=useState(false);const chooser=useRef<HTMLDialogElement>(null);useEffect(()=>{if(choosing)chooser.current?.showModal()},[choosing]);

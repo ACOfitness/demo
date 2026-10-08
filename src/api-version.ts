@@ -1,1 +1,1 @@
-export const API_VERSION='2026-10-07-audit-1';
+export const API_VERSION='2026-10-08-booking-1';
