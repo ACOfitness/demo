@@ -22,7 +22,7 @@ function safeAccount(a:Account, own:boolean):Account {
 export function projectState(source:Database,userId:string):Database {
  const me=identityAccount(source,userId),actor=actorFor(me),admin=me.role==='admin';
  const managed=new Set(source.clients.filter(c=>canSee(source,actor,c)).map(c=>c.id));
- const sessions=source.sessions.filter(s=>managed.has(s.clientId)||me.role==='trainer'&&s.trainerId===me.trainerId&&!s.substituteId&&endAt(s)<=new Date(source.now));
+ const sessions=source.sessions.filter(s=>managed.has(s.clientId)||me.role==='trainer'&&s.trainerId===me.trainerId&&endAt(s)<=new Date(source.now));
  const historical=new Set(sessions.map(s=>s.clientId));
  const trainers=new Set(sessions.map(s=>s.trainerId));
  for(const c of source.clients)if(managed.has(c.id))trainers.add(c.trainerId);

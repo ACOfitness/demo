@@ -132,7 +132,7 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
     if(body.action==='quote'){
      const hold=db.holds.find(h=>h.id===body.id),client=db.clients.find(c=>c.id===hold?.clientId);
      if(!hold||!client||!canSee(db,{role:me.role,trainerId:me.trainerId||'',clientId:me.clientId||''},client)||typeof body.code!=='string'||body.code.length>100)throw new ApiError(403,'Brak dostępu do rezerwacji.');
-     try{const result=quote(db,hold.clientId,hold.service,hold.intensity,body.code,hold.basePrice);return reply({base:result.base,total:result.total,percent:result.percent})}catch(error){throw new ApiError(422,(error as Error).message)}
+     try{const result=hold.paymentRequest?.pricing||quote(db,hold.clientId,hold.service,hold.intensity,body.code,hold.basePrice);return reply({base:result.base,total:result.total,percent:result.percent})}catch(error){throw new ApiError(422,(error as Error).message)}
     }
     if(body.action==='state')return reply({cacheTag:stamp?.tag,accountId:me.id,revision:snapshot.revision,db:projectState(db,me.id)});
     if(snapshot.receipt){if(snapshot.receipt.hash!==requestHash)throw new ApiError(409,'Identyfikator wykorzystano do innej operacji.');return reply({accountId:me.id,revision:snapshot.revision,db:projectState(db,me.id),replayed:true,...(body.action==='resetPassword'&&me.role==='admin'?{temporary:await temporaryPassword()}:{})})}

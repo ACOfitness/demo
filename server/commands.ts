@@ -65,9 +65,10 @@ export function applyCommand(source:Database,userId:string,input:unknown,serverN
  if(cmd.type==='requestPayment'){
   const hold=db.holds.find(h=>h.id===cmd.id&&h.clientId===me.clientId&&h.status==='active'&&h.expires>db.now);
   if(me.role!=='client'||!hold)throw Error('Rezerwacja jest niedostępna.');
-  quote(db,hold.clientId,hold.service,hold.intensity,cmd.code,hold.basePrice);
   if(hold.paymentRequest)return db;
-  hold.paymentRequest={code:cmd.code||'',at:db.now};
+  const pricing=quote(db,hold.clientId,hold.service,hold.intensity,cmd.code,hold.basePrice);
+  hold.price=pricing.total;
+  hold.paymentRequest={code:cmd.code||'',at:db.now,pricing};
   hold.expires=new Date(Math.max(Date.parse(hold.expires),Date.parse(db.now)+(effectiveRules(db).paymentReviewHours||72)*3600000)).toISOString();
   db.messages.unshift({id:uid(),title:'Prośba o rozliczenie pakietu',body:`${db.clients.find(c=>c.id===hold.clientId)?.name} · oczekuje na potwierdzenie wpłaty.`,at:db.now,target:'admin',read:false});
   return db;
