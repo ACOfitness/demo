@@ -1,5 +1,5 @@
 // src/api-version.ts
-var API_VERSION = "2026-10-08-booking-1";
+var API_VERSION = "2026-10-08-audit-fixes-1";
 
 // src/holidays.ts
 function holidayName(date2) {
@@ -63,6 +63,7 @@ var weekOf = (s) => dayAdd(s, -dayIndex(s));
 var dayIndex = (s) => ((/* @__PURE__ */ new Date(s + "T12:00:00Z")).getUTCDay() + 6) % 7;
 var money = (n) => new Intl.NumberFormat("pl-PL", { style: "currency", currency: "PLN", minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: true }).format(n);
 var labelDate = (s, opts = { day: "numeric", month: "long" }) => (/* @__PURE__ */ new Date(s.slice(0, 10) + "T12:00:00")).toLocaleDateString("pl-PL", opts);
+var formatDateTime = (iso2, options = { dateStyle: "short", timeStyle: "medium" }) => new Intl.DateTimeFormat("pl-PL", { ...options, timeZone: "Europe/Warsaw" }).format(new Date(iso2));
 var hourLabel = (h) => `${String(h).padStart(2, "0")}:00`;
 var serviceName = (s) => s === "physio" ? "Powr\xF3t do zdrowia" : "Trening personalny";
 var statusLabels = { scheduled: "Zaplanowany", completed: "Zrealizowany", no_show: "Nieobecno\u015B\u0107", cancelled_early: "Odwo\u0142any na czas", cancelled_late: "P\xF3\u017Ane odwo\u0142anie", cancelled_trainer: "Odwo\u0142any przez trenera" };
@@ -71,9 +72,9 @@ var counts = (s) => s.status === "scheduled" || spends(s);
 var unbooked = (db, p) => Math.max(0, p.count - db.sessions.filter((s) => s.packageId === p.id && counts(s)).length);
 var currentPackage = (db, id2) => {
   const today = dateOf(new Date(db.now)), list = db.packages.filter((p) => p.clientId === id2 && p.start <= today).sort((a, b) => b.start.localeCompare(a.start));
-  return list.find((p) => p.validUntil > today) || list[0];
+  return list[0];
 };
-var canSee = (db, a, c) => a.role === "admin" || a.role === "client" && a.clientId === c.id && c.active || a.role === "trainer" && (a.trainerId === c.trainerId || db.substitutions.some((s) => s.clientId === c.id && s.trainerId === a.trainerId && s.until > db.now));
+var canSee = (db, a, c) => !!c && (a.role === "admin" || a.role === "client" && a.clientId === c.id && c.active || a.role === "trainer" && (a.trainerId === c.trainerId || db.substitutions.some((s) => s.clientId === c.id && s.trainerId === a.trainerId && s.until > db.now)));
 function recurringOwner(db, trainerId, day2, hour2, clientId, ignoreHold) {
   const today = dateOf(new Date(db.now));
   if (db.recurringBusy?.some((s) => s.trainerId === trainerId && s.day === day2 && s.hour === hour2)) return "occupied";
@@ -376,7 +377,7 @@ function execute(source, a, cmd) {
       if (!cmd.ignoreLimits && new Set(cmd.slots.map((s) => s.day)).size !== cmd.slots.length) throw Error("Wybierz najwy\u017Cej jeden trening w ka\u017Cdym dniu.");
       if (!canSee(db, a, c) || !c.prescribed) throw Error("Najpierw przypisz produkt klientowi.");
       if (cmd.slots.length !== c.intensity || cmd.dates.length !== c.intensity * terms.cycleWeeks) throw Error("Wybierz wszystkie sta\u0142e godziny i terminy pakietu.");
-      if (db.packages.some((p) => p.clientId === c.id && cmd.start < p.cycleEnd && dayAdd(cmd.start, terms.cycleWeeks * 7) > p.start)) throw Error("Nowy cykl nie mo\u017Ce nak\u0142ada\u0107 si\u0119 na obecny.");
+      if (db.packages.some((p) => p.clientId === c.id && cmd.start < (p.validUntil < p.cycleEnd ? p.validUntil : p.cycleEnd) && dayAdd(cmd.start, terms.cycleWeeks * 7) > p.start)) throw Error("Nowy cykl nie mo\u017Ce nak\u0142ada\u0107 si\u0119 na obecny.");
       if (db.holds.some((h) => h.clientId === c.id && h.status === "active" && h.expires > db.now)) throw Error("Ten klient ma ju\u017C rezerwacj\u0119 wst\u0119pn\u0105.");
       for (const slot of cmd.slots) {
         if (recurringOwner(db, c.trainerId, slot.day, slot.hour, c.id)) throw Error("Ta sta\u0142a godzina jest przypisana innemu klientowi. Wybierz inn\u0105.");
@@ -396,7 +397,7 @@ function execute(source, a, cmd) {
       const first = Math.min(...cmd.dates.map((d) => +at(d.date, d.hour)));
       const expires = new Date(Math.min(+now + (a.role === "client" ? rules(db).checkoutMinutes / 60 : rules(db).coachHoldHours) * 36e5, first)).toISOString();
       db.holds.unshift({ id: uid(), clientId: c.id, trainerId: c.trainerId, dates: cmd.dates, slots: cmd.slots, start: [...cmd.dates].sort((a2, b) => a2.date.localeCompare(b.date))[0].date, expires, service: c.service, intensity: c.intensity, price: quote(db, c.id, c.service, c.intensity).total, basePrice: quote(db, c.id, c.service, c.intensity).base, holidayOverride: !!cmd.holidayOverride, ignoreLimits: !!cmd.ignoreLimits, terms, status: "active", type: a.role === "client" ? "checkout" : "coach" });
-      notify(db, "Terminy czekaj\u0105 na op\u0142acenie", `Zarezerwowano ${cmd.dates.length} trening\xF3w z ${db.trainers.find((t) => t.id === c.trainerId)?.name}. Pierwszy: ${labelDate(cmd.dates.slice().sort((a2, b) => a2.date.localeCompare(b.date))[0].date)}. P\u0142atno\u015B\u0107 do ${new Date(expires).toLocaleString("pl-PL")}.`, c.id);
+      notify(db, "Terminy czekaj\u0105 na op\u0142acenie", `Zarezerwowano ${cmd.dates.length} trening\xF3w z ${db.trainers.find((t) => t.id === c.trainerId)?.name}. Pierwszy: ${labelDate(cmd.dates.slice().sort((a2, b) => a2.date.localeCompare(b.date))[0].date)}. P\u0142atno\u015B\u0107 do ${formatDateTime(expires)}.`, c.id);
       break;
     }
     case "editHold": {
@@ -434,13 +435,14 @@ function execute(source, a, cmd) {
       for (const d of h.dates) if (!available(db, h.trainerId, d.date, d.hour, h.clientId, void 0, h.id, h.holidayOverride)) throw Error(`Termin ${labelDate(d.date)} o ${hourLabel(d.hour)} jest zaj\u0119ty. Edytuj godziny rezerwacji i pon\xF3w rozliczenie.`);
       if ([...h.dates].sort((a2, b) => a2.date.localeCompare(b.date))[h.intensity - 1].date > dayAdd(dateOf(new Date(db.now)), rules(db).startDays)) throw Error("Pierwsze treningi wypadaj\u0105 poza dozwolonym terminem rozpocz\u0119cia.");
       if (!renewalAllowed(db, c.id)) throw Error("Zakup kolejnego pakietu nie jest jeszcze dost\u0119pny.");
-      const pricing = quote(db, c.id, h.service, h.intensity, cmd.code, h.basePrice);
+      const pricing = h.paymentRequest?.pricing || quote(db, c.id, h.service, h.intensity, cmd.code, h.basePrice);
       h.price = pricing.total;
       const terms = h.terms || defaultRules;
       const id2 = uid();
       db.packages.push({ id: id2, clientId: h.clientId, count: h.dates.length, start: h.start, cycleEnd: dayAdd(h.start, (h.terms || defaultRules).cycleWeeks * 7), validUntil: dayAdd(h.start, terms.validWeeks * 7), protectionUntil: dayAdd(h.start, terms.validWeeks * 7 + terms.protectionDays), slots: h.slots, service: h.service, intensity: h.intensity, price: h.price, basePrice: pricing.base, discountPercent: pricing.percent, promotionId: pricing.promotionId });
       if (pricing.code) {
-        const promo = db.promotions.find((p) => p.id === pricing.promotionId);
+        const promo = db.promotions?.find((p) => p.id === pricing.promotionId);
+        if (!promo || promo.used >= promo.maxUses) throw Error("Limit u\u017Cy\u0107 kodu zosta\u0142 wyczerpany. Administrator musi wyja\u015Bni\u0107 rozliczenie.");
         promo.used++;
       }
       for (const d of h.dates) db.sessions.push({ id: uid(), clientId: h.clientId, trainerId: h.trainerId, locationId: db.trainers.find((t) => t.id === h.trainerId)?.locationId || locationsOf(db)[0].id, packageId: id2, date: d.date, hour: d.hour, kind: "training", status: "scheduled", publicNote: "", privateNote: "", comments: [], holidayOverride: !!h.holidayOverride, ignoreLimits: !!h.ignoreLimits, original: d.original });
@@ -454,7 +456,7 @@ function execute(source, a, cmd) {
       requireBookingLead(db, "training", cmd.date, cmd.hour, a.role);
       const p = db.packages.find((p2) => p2.id === cmd.packageId);
       const c = db.clients.find((c2) => c2.id === p.clientId);
-      if (!canSee(db, a, c) || p.frozen || !unbooked(db, p) || cmd.date >= p.validUntil || cmd.date < p.start) throw Error("Brak wa\u017Cnego wej\u015Bcia na ten termin.");
+      if (!canSee(db, a, c) || p.start < (currentPackage(db, c.id)?.start || p.start) || p.frozen || !unbooked(db, p) || cmd.date >= p.validUntil || cmd.date < p.start) throw Error("Brak wa\u017Cnego wej\u015Bcia na ten termin.");
       if (!available(db, c.trainerId, cmd.date, cmd.hour, c.id, void 0, void 0, cmd.holidayOverride)) throw Error("Termin jest zaj\u0119ty.");
       if (!cmd.ignoreLimits) limitCheck(db, { ...c, intensity: p.intensity }, cmd.date);
       db.sessions.push({ id: uid(), clientId: c.id, trainerId: c.trainerId, locationId: db.trainers.find((t) => t.id === c.trainerId)?.locationId || locationsOf(db)[0].id, packageId: p.id, holidayOverride: !!cmd.holidayOverride, ignoreLimits: !!cmd.ignoreLimits, date: cmd.date, hour: cmd.hour, kind: "training", status: "scheduled", publicNote: "", privateNote: "", comments: [] });
@@ -615,7 +617,7 @@ function quote(db, clientId, service2, intensity, code = "", baseOverride) {
 function renewalAllowed(db, id2) {
   if (db.packages.some((p2) => p2.clientId === id2 && p2.start > dateOf(new Date(db.now)))) return false;
   const p = currentPackage(db, id2);
-  return !p || dateOf(new Date(db.now)) >= dayAdd(p.cycleEnd, -rules(db).renewalDays);
+  return !p || p.validUntil <= dateOf(new Date(db.now)) || dateOf(new Date(db.now)) >= dayAdd(p.cycleEnd, -rules(db).renewalDays);
 }
 function business(db, a, cmd) {
   if (a.role !== "admin") throw Error("Ta operacja jest dost\u0119pna tylko administratorowi.");
@@ -670,6 +672,16 @@ function business(db, a, cmd) {
   return db;
 }
 
+// src/validation.ts
+function validPhone(value) {
+  return /^\+?[\d\s().-]+$/.test(value.trim()) && /^\d{7,15}$/.test(value.replace(/\D/g, ""));
+}
+function validPesel(value) {
+  if (!/^\d{11}$/.test(value)) return false;
+  const digits = [...value].map(Number), weights = [1, 3, 7, 9, 1, 3, 7, 9, 1, 3];
+  return (10 - digits.slice(0, 10).reduce((sum, n, i) => sum + n * weights[i], 0) % 10) % 10 === digits[10];
+}
+
 // src/auth.ts
 var guest = { role: "guest", trainerId: "", clientId: "" };
 function actorFor(a) {
@@ -691,6 +703,7 @@ function validBirthDate(value, now) {
 async function registerAccount(db, cmd) {
   unique(db, cmd.email.trim().toLowerCase());
   if (!validBirthDate(cmd.birthDate || "", db.now)) throw Error("Podaj poprawn\u0105 dat\u0119 urodzenia.");
+  if (!validPhone(cmd.phone)) throw Error("Podaj poprawny numer telefonu (7\u201315 cyfr).");
   const next = execute(db, guest, cmd);
   const client = next.clients.at(-1);
   next.accounts.push({ id: uid(), email: client.email, role: "client", clientId: client.id });
@@ -708,7 +721,7 @@ async function addTrainer(db, actor, input) {
   if (existing?.email !== email) unique(db, email);
   if (!input.name.trim() || !input.products.length || input.products.some((p) => !["personal", "physio"].includes(p) || !Number.isFinite(input.productRates[p]) || input.productRates[p] <= 0) || input.days.some((d) => !Number.isInteger(d) || d < 0 || d > 6) || input.hours.some((h) => !Number.isInteger(h) || h < 0 || h > 23)) throw Error("Uzupe\u0142nij dane, produkty, stawki i dost\u0119pno\u015B\u0107.");
   if (input.consultationRate !== void 0 && (!Number.isFinite(input.consultationRate) || input.consultationRate <= 0)) throw Error("Podaj stawk\u0119 za konsultacj\u0119.");
-  if (input.pesel && !/^\d{11}$/.test(input.pesel)) throw Error("PESEL musi zawiera\u0107 11 cyfr.");
+  if (input.pesel && !validPesel(input.pesel)) throw Error("Podaj poprawny PESEL z prawid\u0142ow\u0105 sum\u0105 kontroln\u0105.");
   if (old && db.clients.some((c) => c.trainerId === old.id && c.prescribed && !input.products.includes(c.service))) throw Error("Nie mo\u017Cna wy\u0142\u0105czy\u0107 produktu przypisanego podopiecznym.");
   if (!old && !input.password) throw Error("Ustaw has\u0142o trenera.");
   const password = input.password ? await passwordHash(input.password) : void 0;
@@ -896,7 +909,7 @@ function safeAccount(a, own) {
 function projectState(source, userId) {
   const me = identityAccount(source, userId), actor = actorFor(me), admin = me.role === "admin";
   const managed = new Set(source.clients.filter((c) => canSee(source, actor, c)).map((c) => c.id));
-  const sessions = source.sessions.filter((s) => managed.has(s.clientId) || me.role === "trainer" && s.trainerId === me.trainerId && !s.substituteId && endAt(s) <= new Date(source.now));
+  const sessions = source.sessions.filter((s) => managed.has(s.clientId) || me.role === "trainer" && s.trainerId === me.trainerId && endAt(s) <= new Date(source.now));
   const historical = new Set(sessions.map((s) => s.clientId));
   const trainers = new Set(sessions.map((s) => s.trainerId));
   for (const c of source.clients) if (managed.has(c.id)) trainers.add(c.trainerId);
@@ -1122,9 +1135,10 @@ function applyCommand(source, userId, input, serverNow) {
   if (cmd.type === "requestPayment") {
     const hold = db.holds.find((h) => h.id === cmd.id && h.clientId === me.clientId && h.status === "active" && h.expires > db.now);
     if (me.role !== "client" || !hold) throw Error("Rezerwacja jest niedost\u0119pna.");
-    quote(db, hold.clientId, hold.service, hold.intensity, cmd.code, hold.basePrice);
     if (hold.paymentRequest) return db;
-    hold.paymentRequest = { code: cmd.code || "", at: db.now };
+    const pricing = quote(db, hold.clientId, hold.service, hold.intensity, cmd.code, hold.basePrice);
+    hold.price = pricing.total;
+    hold.paymentRequest = { code: cmd.code || "", at: db.now, pricing };
     hold.expires = new Date(Math.max(Date.parse(hold.expires), Date.parse(db.now) + (rules(db).paymentReviewHours || 72) * 36e5)).toISOString();
     db.messages.unshift({ id: uid(), title: "Pro\u015Bba o rozliczenie pakietu", body: `${db.clients.find((c) => c.id === hold.clientId)?.name} \xB7 oczekuje na potwierdzenie wp\u0142aty.`, at: db.now, target: "admin", read: false });
     return db;
@@ -1200,7 +1214,7 @@ function encodeRelational(db, baseline = sourceRows.get(db) || []) {
     for (const s of p.slots) add("aco_package_slots", { id: p.id + ":" + s.day + ":" + s.hour, package_id: p.id, weekday: s.day, hour: s.hour });
   }
   for (const h of db.holds) {
-    add("aco_holds", { id: h.id, base_price_grosz: money2(h.basePrice), holiday_override: !!h.holidayOverride, ignore_limits: !!h.ignoreLimits, client_id: h.clientId, trainer_id: h.trainerId, product_id: h.service, intensity: h.intensity, starts_on: h.start, expires_at: iso(h.expires), price_grosz: money2(h.price), status: h.status, kind: h.type, payment_requested_at: iso(h.paymentRequest?.at) || null, promotion_code: h.paymentRequest?.code ?? null });
+    add("aco_holds", { id: h.id, base_price_grosz: money2(h.basePrice), holiday_override: !!h.holidayOverride, ignore_limits: !!h.ignoreLimits, client_id: h.clientId, trainer_id: h.trainerId, product_id: h.service, intensity: h.intensity, starts_on: h.start, expires_at: iso(h.expires), price_grosz: money2(h.price), status: h.status, kind: h.type, payment_requested_at: iso(h.paymentRequest?.at) || null, promotion_code: h.paymentRequest?.code ?? null, payment_quote: h.paymentRequest?.pricing ?? null });
     for (const d of h.dates) add("aco_hold_dates", { id: [h.id, d.date, d.hour].join(":"), hold_id: h.id, starts_at: starts(d.date, d.hour), original_starts_at: original(d.original) });
     for (const s of h.slots) add("aco_hold_slots", { id: h.id + ":" + s.day + ":" + s.hour, hold_id: h.id, weekday: s.day, hour: s.hour });
     add("aco_hold_terms", { id: h.id, hold_id: h.id, ...ruleData(h.terms || defaultRules) });
@@ -1254,7 +1268,7 @@ function decodeRelational(snapshot) {
   for (const p of get("aco_product_prices")) db.settings.packagePrices[p.product_id][p.intensity] = p.amount_grosz / 100;
   for (const p of get("aco_promotions")) db.promotions.push({ id: p.id, kind: p.kind, value: p.value, percent: Number(p.percent), maxUses: p.max_uses || 0, used: p.used, expires: p.expires_on || "", active: p.active });
   for (const p of get("aco_packages")) db.packages.push({ id: p.id, clientId: p.client_id, service: p.product, intensity: p.intensity, count: p.count, start: p.starts_on, cycleEnd: p.cycle_end, validUntil: p.valid_until, protectionUntil: p.protection_until, price: p.price_grosz / 100, basePrice: p.base_price_grosz / 100, discountPercent: Number(p.discount_percent), promotionId: p.promotion_id || void 0, frozen: p.frozen, slots: get("aco_package_slots").filter((s) => s.package_id === p.id).map((s) => ({ day: s.weekday, hour: s.hour })) });
-  for (const h of get("aco_holds")) db.holds.push({ id: h.id, basePrice: h.base_price_grosz == null ? void 0 : h.base_price_grosz / 100, holidayOverride: !!h.holiday_override, ignoreLimits: !!h.ignore_limits, clientId: h.client_id, trainerId: h.trainer_id, service: h.product_id, intensity: h.intensity, start: h.starts_on, expires: iso(h.expires_at), price: h.price_grosz / 100, status: h.status, type: h.kind, terms: readRules(get("aco_hold_terms").find((t) => t.hold_id === h.id) || {}), dates: get("aco_hold_dates").filter((d) => d.hold_id === h.id).map((d) => ({ date: wall(d.starts_at).slice(0, 10), hour: Number(wall(d.starts_at).slice(11, 13)), original: d.original_starts_at ? wall(d.original_starts_at) : void 0 })), slots: get("aco_hold_slots").filter((s) => s.hold_id === h.id).map((s) => ({ day: s.weekday, hour: s.hour })), paymentRequest: h.payment_requested_at ? { at: iso(h.payment_requested_at), code: h.promotion_code || "" } : void 0 });
+  for (const h of get("aco_holds")) db.holds.push({ id: h.id, basePrice: h.base_price_grosz == null ? void 0 : h.base_price_grosz / 100, holidayOverride: !!h.holiday_override, ignoreLimits: !!h.ignore_limits, clientId: h.client_id, trainerId: h.trainer_id, service: h.product_id, intensity: h.intensity, start: h.starts_on, expires: iso(h.expires_at), price: h.price_grosz / 100, status: h.status, type: h.kind, terms: readRules(get("aco_hold_terms").find((t) => t.hold_id === h.id) || {}), dates: get("aco_hold_dates").filter((d) => d.hold_id === h.id).map((d) => ({ date: wall(d.starts_at).slice(0, 10), hour: Number(wall(d.starts_at).slice(11, 13)), original: d.original_starts_at ? wall(d.original_starts_at) : void 0 })), slots: get("aco_hold_slots").filter((s) => s.hold_id === h.id).map((s) => ({ day: s.weekday, hour: s.hour })), paymentRequest: h.payment_requested_at ? { at: iso(h.payment_requested_at), code: h.promotion_code || "", pricing: h.payment_quote || void 0 } : void 0 });
   for (const s of get("aco_substitutions")) if (!s.revoked_at) db.substitutions.push({ id: s.id, clientId: s.client_id, trainerId: s.trainer_id, until: iso(s.expires_at) });
   for (const s of get("aco_sessions")) {
     const earning = get("aco_earnings").find((e) => e.session_id === s.id);
@@ -1629,7 +1643,7 @@ function createHandler(config, fetcher = fetch) {
           const hold = db.holds.find((h) => h.id === body.id), client = db.clients.find((c) => c.id === hold?.clientId);
           if (!hold || !client || !canSee(db, { role: me.role, trainerId: me.trainerId || "", clientId: me.clientId || "" }, client) || typeof body.code !== "string" || body.code.length > 100) throw new ApiError(403, "Brak dost\u0119pu do rezerwacji.");
           try {
-            const result = quote(db, hold.clientId, hold.service, hold.intensity, body.code, hold.basePrice);
+            const result = hold.paymentRequest?.pricing || quote(db, hold.clientId, hold.service, hold.intensity, body.code, hold.basePrice);
             return reply({ base: result.base, total: result.total, percent: result.percent });
           } catch (error) {
             throw new ApiError(422, error.message);
