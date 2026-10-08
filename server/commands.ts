@@ -15,7 +15,7 @@ const object=(fields:Record<string,Check>):Check=>v=>v!==null&&typeof v==='objec
 const id=text(100,1),day=number(0,6,true),hour=number(0,23,true),service=choice('personal','physio');
 const date:Check=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&v>='1900-01-01'&&v<='2200-12-31'&&Number.isFinite(Date.parse(v+'T12:00:00Z'))&&new Date(v+'T12:00:00Z').toISOString().slice(0,10)===v;
 const dates=array(object({date,hour,original:optional(text(100))}),364);
-const rules=object(Object.fromEntries(Object.keys(defaultRules).map(k=>[k,k==='paymentReviewHours'?optional(number(1,366,true)):number(1,k.endsWith('Weeks')?52:366,true)])));
+const rules=object(Object.fromEntries(Object.keys(defaultRules).map(k=>[k,k.endsWith('LeadHours')?optional(number(0,8760,true)):k==='paymentReviewHours'?optional(number(1,366,true)):number(1,k.endsWith('Weeks')?52:366,true)])));
 const prices=object({'1':number(.01,1000000),'2':number(.01,1000000),'3':number(.01,1000000)});
 const photo:Check=v=>typeof v==='string'&&(v===''||v.length<=2900000&&/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v));
 const fields:Record<string,Record<string,Check>>={
@@ -55,6 +55,7 @@ export function applyCommand(source:Database,userId:string,input:unknown,serverN
  const me=identityAccount(db,userId);
  if(me.mustChangePassword)throw Error('Najpierw zmień hasło tymczasowe.');
  const cmd=parseCommand(input);
+ if(cmd.type==='settings'&&cmd.rules){cmd.rules.consultationLeadHours??=effectiveRules(db).consultationLeadHours??24;cmd.rules.trainingLeadHours??=effectiveRules(db).trainingLeadHours??24;}
  if(cmd.type==='settings'&&cmd.rules&&!cmd.rules.paymentReviewHours)cmd.rules.paymentReviewHours=effectiveRules(db).paymentReviewHours||72;
  // Client-supplied "payment complete" can never create paid entries.
  if(cmd.type==='payHold'&&me.role!=='admin')throw Error('Opłatę może potwierdzić wyłącznie administrator.');

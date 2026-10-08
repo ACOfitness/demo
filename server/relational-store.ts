@@ -3,7 +3,7 @@ import {locationsOf,defaultLocation,at,dateOf,defaultRules,packagePrice,rules,tr
 import {productCopy} from '../src/business';
 export interface Row {table:string;key:string;data:Record<string,any>;version?:number}
 export interface RelationalSnapshot {revision:number;now:string;timeOffsetSeconds?:number;clockVersion?:number;testToolsEnabled?:boolean;role:string;rows:Row[];receipt?:{hash:string;revision:number}}
-const ruleColumns:Record<keyof Rules,string>={renewalDays:'renewal_days',cycleWeeks:'cycle_weeks',validWeeks:'validity_weeks',coachHoldHours:'coach_hold_hours',checkoutMinutes:'checkout_minutes',paymentReviewHours:'payment_review_hours',protectionDays:'protection_days',consultationDays:'consultation_days',startDays:'start_days',substituteHours:'substitute_hours',freezeDays:'freeze_days'};
+const ruleColumns:Record<keyof Rules,string>={renewalDays:'renewal_days',cycleWeeks:'cycle_weeks',validWeeks:'validity_weeks',coachHoldHours:'coach_hold_hours',checkoutMinutes:'checkout_minutes',paymentReviewHours:'payment_review_hours',consultationLeadHours:'consultation_lead_hours',trainingLeadHours:'training_lead_hours',protectionDays:'protection_days',consultationDays:'consultation_days',startDays:'start_days',substituteHours:'substitute_hours',freezeDays:'freeze_days'};
 const money=(n:number|undefined)=>n===undefined?null:Math.round(n*100);
 const iso=(value:string|null|undefined)=>value?new Date(value).toISOString():undefined;
 const wall=(value:string)=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Warsaw',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(value));

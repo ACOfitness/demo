@@ -165,7 +165,12 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
       if(typeof body.password!=='string'||body.password.length<12||body.password.length>200)throw Error('Hasło musi mieć od 12 do 200 znaków.');
       if(body.action==='changePassword'&&!passwordUpdated){
        if(typeof body.oldPassword!=='string'||body.oldPassword===body.password)throw Error('Wpisz inne hasło niż dotychczasowe.');
-       try{await auth('/token?grant_type=password','POST',{email:me.email,password:body.oldPassword})}catch{await auth('/token?grant_type=password','POST',{email:me.email,password:body.password})}
+       let verified:{user?:{id?:string}};
+       try{verified=await auth('/token?grant_type=password','POST',{email:me.email,password:body.oldPassword})}catch{
+        verified=await auth('/token?grant_type=password','POST',{email:me.email,password:body.password});
+        passwordUpdated=true;
+       }
+       if(verified.user?.id!==me.id)throw Error('Nie udało się potwierdzić tożsamości konta.');
       }
       next=structuredClone(db);
       if(!passwordUpdated){await auth('/user','PUT',{password:body.password},req.headers.get('Authorization')!.slice(7));passwordUpdated=true}
