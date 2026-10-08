@@ -13,7 +13,7 @@ for(const name of (await readdir(new URL('../../supabase/migrations/',import.met
 // Match hosted Supabase: backend can inspect Auth sessions, never delete them.
 await pg.exec('revoke delete on auth.sessions from service_role');
 const sessionIds=new Map<number,string>();
-const source=await initialDatabase();source.accounts=[{id:id(1),email:'one@example.test',role:'client',clientId:id(1)},{id:id(2),email:'two@example.test',role:'client',clientId:id(2)},{id:id(3),email:'trainer@example.test',role:'trainer',trainerId:id(3)},{id:id(4),email:'admin@example.test',role:'admin'}];
+const source=await initialDatabase();source.settings.rules={...source.settings.rules!,consultationLeadHours:0,trainingLeadHours:0};source.accounts=[{id:id(1),email:'one@example.test',role:'client',clientId:id(1)},{id:id(2),email:'two@example.test',role:'client',clientId:id(2)},{id:id(3),email:'trainer@example.test',role:'trainer',trainerId:id(3)},{id:id(4),email:'admin@example.test',role:'admin'}];
 source.trainers=[{id:id(3),name:'Trainer',rate:50,days:[0,1,2,3,4,5,6],hours:[10,11,12],products:['personal'],pesel:'12345678901'}];
 source.clients=source.accounts.slice(0,2).map(a=>({id:a.id,email:a.email,name:a.id,phone:'123',birthDate:'1990-01-01',trainerId:id(3),service:'personal',intensity:1,active:true,invited:true,prescribed:true,answers:['PRIVATE HEALTH']}));
 for(const account of source.accounts){await pg.query('insert into auth.users(id) values($1)',[account.id]);await pg.query('insert into auth.sessions values($1,$2,null)',[id(Number(account.id.slice(-2))+100),account.id]);await pg.query('insert into aco_private.identities(user_id,role,enabled) values($1,$2,true)',[account.id,account.role])}
@@ -41,7 +41,12 @@ const fetcher:typeof fetch=async(input,init)=>{
   return account&&passwords.get(account.id)===body.password?Response.json({user:{id:account.id}}):Response.json({error:'invalid password'},{status:400});
  }
  if(url.pathname.startsWith('/auth/v1/admin/users/')&&init?.method==='GET')return Response.json({email:authEmails.get(url.pathname.split('/').at(-1)!)});
- if(''===url.pathname||url.pathname==='/auth/v1/user'&&init?.method==='PUT'||url.pathname.startsWith('/auth/v1/admin/users/'))return Response.json({});
+ if(url.pathname==='/auth/v1/user'&&init?.method==='PUT'){
+  const token=(init.headers as Record<string,string>).Authorization.slice(7);const claims=JSON.parse(Buffer.from(token.split('.')[1],'base64url').toString());const body=JSON.parse(String(init.body));
+  if(passwords.get(claims.sub)===body.password)return Response.json({error:'same_password'},{status:422});
+  passwordWrites++;passwords.set(claims.sub,body.password);return Response.json({id:claims.sub});
+ }
+ if(''===url.pathname||url.pathname.startsWith('/auth/v1/admin/users/'))return Response.json({});
  const name=url.pathname.split('/').at(-1)!;assert.ok(known.has(name));if(name==='aco_relational_commit'&&failRegistrationCommit){failRegistrationCommit=false;throw new TypeError('Simulated database interruption')}if(name==='aco_complete_activation'&&failCompletion){failCompletion=false;throw new TypeError('Test network failure')}
  if(name==='aco_finish_email_change'&&failEmailFinish){failEmailFinish=false;throw new TypeError('Test interrupted completion')}
  const values=JSON.parse(String(init?.body)),keys=Object.keys(values);assert.ok(keys.every(k=>/^p_[a-z_]+$/.test(k)));
@@ -271,3 +276,16 @@ test('trainer cannot change profile via command or database action whitelist',as
 });
 
 test('state cache skips full history only while authorized and unchanged',async()=>{const first=await handle(request(4,{action:'state'})),body=await first.json();assert.equal(first.status,200);assert.ok(body.cacheTag);const same=await handle(request(4,{action:'state',cacheTag:body.cacheTag}));const compact=await same.json();assert.equal(same.status,200);assert.equal(compact.unchanged,true);assert.equal(compact.db,undefined);await pg.query("update public.aco_settings set consultation_grosz=consultation_grosz+1 where id='company'");const changed=await handle(request(4,{action:'state',cacheTag:body.cacheTag}));assert.ok((await changed.json()).db)});
+
+test('temporary password retry finishes profile after Auth succeeds but commit fails',async()=>{
+ await pg.query('update public.aco_profiles set must_change_password=true where id=$1',[id(3)]);
+ passwords.set(id(3),'Temporary!12345');const before=passwordWrites;
+ failRegistrationCommit=true;
+ const body={action:'changePassword',requestId:crypto.randomUUID(),oldPassword:'Temporary!12345',password:'Permanent!12345'};
+ const first=await handle(request(3,body));assert.notEqual(first.status,200);
+ assert.equal(passwords.get(id(3)),'Permanent!12345');
+ assert.equal((await pg.query<any>('select must_change_password from public.aco_profiles where id=$1',[id(3)])).rows[0].must_change_password,true);
+ const retry=await handle(request(3,{...body,requestId:crypto.randomUUID()}));assert.equal(retry.status,200,await retry.text());
+ assert.equal(passwordWrites,before+1);
+ assert.equal((await pg.query<any>('select must_change_password from public.aco_profiles where id=$1',[id(3)])).rows[0].must_change_password,false);
+});
