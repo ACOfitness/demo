@@ -1,5 +1,5 @@
 // src/api-version.ts
-var API_VERSION = "2026-10-07-audit-1";
+var API_VERSION = "2026-10-08-booking-1";
 
 // src/holidays.ts
 function holidayName(date2) {
@@ -26,8 +26,15 @@ function availabilityRanges(hours) {
 }
 
 // src/domain.ts
-var defaultRules = { renewalDays: 7, cycleWeeks: 4, validWeeks: 6, coachHoldHours: 72, checkoutMinutes: 15, paymentReviewHours: 72, protectionDays: 1, consultationDays: 7, startDays: 14, substituteHours: 48, freezeDays: 7 };
+var defaultRules = { renewalDays: 7, cycleWeeks: 4, validWeeks: 6, coachHoldHours: 72, checkoutMinutes: 15, paymentReviewHours: 72, consultationLeadHours: 24, trainingLeadHours: 24, protectionDays: 1, consultationDays: 7, startDays: 14, substituteHours: 48, freezeDays: 7 };
 var rules = (db) => Object.fromEntries(Object.entries(defaultRules).map(([key, value]) => [key, db.settings.rules?.[key] ?? value]));
+var bookingLeadAllowed = (db, kind, date2, hour2, role = "client") => {
+  const remaining = +at(date2, hour2) - Date.parse(db.now);
+  return remaining > 0 && (role === "admin" || role === "trainer" || remaining >= (rules(db)[kind === "consultation" ? "consultationLeadHours" : "trainingLeadHours"] ?? 24) * 36e5);
+};
+var requireBookingLead = (db, kind, date2, hour2, role = "client") => {
+  if (!bookingLeadAllowed(db, kind, date2, hour2, role)) throw Error(`Wybierz przysz\u0142y termin${role === "admin" || role === "trainer" ? "" : ` z wyprzedzeniem co najmniej ${rules(db)[kind === "consultation" ? "consultationLeadHours" : "trainingLeadHours"] ?? 24} godzin`}.`);
+};
 var packagePrice = (db, service2, intensity) => db.settings.packagePrices?.[service2]?.[intensity] ?? db.settings[service2] * intensity * rules(db).cycleWeeks;
 var trainerHours = (t, day2) => t.weeklyHours ? t.weeklyHours[day2] || [] : t.days.includes(day2) ? t.hours : [];
 var defaultLocation = { id: "00000000-0000-4000-8000-000000000ac0", name: "Studio ACO!", address: "" };
@@ -257,6 +264,7 @@ function execute(source, a, cmd) {
       const originalSession = db.sessions.find((s2) => s2.id === cmd.id);
       if (originalSession?.date === cmd.date && originalSession.hour === cmd.hour) throw Error("Wybierz termin inny ni\u017C obecny.");
       const s = getSession(db, a, cmd.id);
+      requireBookingLead(db, s.kind, cmd.date, cmd.hour, a.role);
       if (s.kind === "consultation") {
         requireAdmin(a);
         if (s.status !== "scheduled" || at(s.date, s.hour) <= now) throw Error("Mo\u017Cna zmieni\u0107 tylko przysz\u0142\u0105 konsultacj\u0119.");
@@ -274,8 +282,8 @@ function execute(source, a, cmd) {
         notify(db, "Zmieniono konsultacj\u0119", `${labelDate(s.date)}, ${hourLabel(s.hour)}`, s.clientId);
         break;
       }
-      if (s.status !== "scheduled") throw Error("Mo\u017Cna prze\u0142o\u017Cy\u0107 tylko zaplanowany trening.");
-      if (+at(s.date, s.hour) - +now < db.settings.cancelHours * 36e5) throw Error(`Zosta\u0142o mniej ni\u017C ${db.settings.cancelHours} h. Odwo\u0142aj sesj\u0119 (wej\u015Bcie przepadnie), a now\u0105 um\xF3w z wolnego wej\u015Bcia.`);
+      if (s.status !== "scheduled" || at(s.date, s.hour) <= now) throw Error("Mo\u017Cna prze\u0142o\u017Cy\u0107 tylko przysz\u0142y zaplanowany trening.");
+      if (a.role === "client" && +at(s.date, s.hour) - +now < db.settings.cancelHours * 36e5) throw Error(`Zosta\u0142o mniej ni\u017C ${db.settings.cancelHours} h. Odwo\u0142aj sesj\u0119 (wej\u015Bcie przepadnie), a now\u0105 um\xF3w z wolnego wej\u015Bcia.`);
       const p = db.packages.find((p2) => p2.id === s.packageId);
       if (cmd.date < p.start || cmd.date >= p.validUntil || p.frozen) throw Error("Termin jest poza wa\u017Cno\u015Bci\u0105 pakietu albo pakiet jest zamro\u017Cony.");
       if (!available(db, s.trainerId, cmd.date, cmd.hour, s.clientId, s.id, void 0, cmd.holidayOverride)) throw Error("Ten termin jest niedost\u0119pny.");
@@ -349,6 +357,7 @@ function execute(source, a, cmd) {
       if (db.clients.some((c) => c.email.toLowerCase() === cmd.email.trim().toLowerCase())) throw Error("Profil z tym adresem e-mail ju\u017C istnieje.");
       const id2 = uid();
       if (cmd.type === "register") {
+        requireBookingLead(db, "consultation", cmd.date, cmd.hour);
         if (cmd.date > dayAdd(dateOf(new Date(db.now)), rules(db).consultationDays)) throw Error(`Konsultacj\u0119 mo\u017Cna um\xF3wi\u0107 maksymalnie ${rules(db).consultationDays} dni naprz\xF3d.`);
         if (!available(db, cmd.trainerId, cmd.date, cmd.hour) || !available(db, cmd.trainerId, cmd.date, cmd.hour + 1)) throw Error("Konsultacja wymaga dw\xF3ch wolnych godzin.");
         db.sessions.push({ id: uid(), clientId: id2, trainerId: cmd.trainerId, locationId: db.trainers.find((t) => t.id === cmd.trainerId)?.locationId || locationsOf(db)[0].id, date: cmd.date, hour: cmd.hour, kind: "consultation", status: "scheduled", publicNote: "", privateNote: "", comments: [] });
@@ -376,6 +385,7 @@ function execute(source, a, cmd) {
       }
       const selected = [];
       for (const d of cmd.dates) {
+        requireBookingLead(db, "training", d.date, d.hour, a.role);
         if (d.date < cmd.start || d.date >= dayAdd(cmd.start, terms.validWeeks * 7)) throw Error(`Wszystkie daty musz\u0105 zmie\u015Bci\u0107 si\u0119 w ${terms.cycleWeeks} tygodniach.`);
         if (!available(db, c.trainerId, d.date, d.hour, c.id, void 0, void 0, cmd.holidayOverride)) throw Error(`Termin ${labelDate(d.date)} ${hourLabel(d.hour)} jest niedost\u0119pny.`);
         if (cmd.dates.filter((x) => x.date === d.date && x.hour === d.hour).length > 1) throw Error("Dwa treningi nie mog\u0105 mie\u0107 tego samego terminu.");
@@ -402,6 +412,7 @@ function execute(source, a, cmd) {
       if (cmd.dates.length !== h.dates.length) throw Error("Zachowaj wszystkie treningi.");
       const selected = [];
       for (const d of cmd.dates) {
+        if (!h.dates.some((old) => old.date === d.date && old.hour === d.hour)) requireBookingLead(db, "training", d.date, d.hour, a.role);
         if (d.date < h.start || d.date >= dayAdd(h.start, (h.terms || defaultRules).validWeeks * 7)) throw Error("Wybierz termin w cyklu zarezerwowanego pakietu.");
         if (!available(db, h.trainerId, d.date, d.hour, c.id, void 0, h.id, cmd.holidayOverride || h.holidayOverride)) throw Error("Wybrany termin jest niedost\u0119pny.");
         if (cmd.dates.filter((x) => x.date === d.date && x.hour === d.hour).length > 1) throw Error("Daty nie mog\u0105 si\u0119 powtarza\u0107.");
@@ -440,6 +451,7 @@ function execute(source, a, cmd) {
       break;
     }
     case "makeup": {
+      requireBookingLead(db, "training", cmd.date, cmd.hour, a.role);
       const p = db.packages.find((p2) => p2.id === cmd.packageId);
       const c = db.clients.find((c2) => c2.id === p.clientId);
       if (!canSee(db, a, c) || p.frozen || !unbooked(db, p) || cmd.date >= p.validUntil || cmd.date < p.start) throw Error("Brak wa\u017Cnego wej\u015Bcia na ten termin.");
@@ -545,7 +557,7 @@ function execute(source, a, cmd) {
       requireAdmin(a);
       if ([cmd.personal, cmd.physio, cmd.consultation, cmd.cancelHours].some((n) => !Number.isFinite(n) || n <= 0)) throw Error("Warto\u015Bci musz\u0105 by\u0107 wi\u0119ksze od zera.");
       const r = cmd.rules || rules(db);
-      if (Object.values(r).some((n) => !Number.isInteger(n) || n < 1) || r.validWeeks < r.cycleWeeks) throw Error("Parametry musz\u0105 by\u0107 dodatnimi liczbami ca\u0142kowitymi; wa\u017Cno\u015B\u0107 nie mo\u017Ce by\u0107 kr\xF3tsza ni\u017C cykl.");
+      if (Object.entries(r).some(([key, n]) => !Number.isInteger(n) || n < (key.endsWith("LeadHours") ? 0 : 1) || key.endsWith("LeadHours") && n > 8760) || r.validWeeks < r.cycleWeeks) throw Error("Parametry musz\u0105 by\u0107 dodatnimi liczbami ca\u0142kowitymi; wa\u017Cno\u015B\u0107 nie mo\u017Ce by\u0107 kr\xF3tsza ni\u017C cykl.");
       const prices2 = cmd.packagePrices || db.settings.packagePrices;
       if (prices2 && ["personal", "physio"].some((s) => [1, 2, 3].some((i) => !Number.isFinite(prices2[s]?.[i]) || prices2[s][i] <= 0))) throw Error("Uzupe\u0142nij wszystkie ceny pakiet\xF3w.");
       db.settings = { ...db.settings, personal: cmd.personal, physio: cmd.physio, consultation: cmd.consultation, cancelHours: cmd.cancelHours, rules: r, packagePrices: prices2 };
@@ -1041,7 +1053,7 @@ var hour = number(0, 23, true);
 var service = choice("personal", "physio");
 var date = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && v >= "1900-01-01" && v <= "2200-12-31" && Number.isFinite(Date.parse(v + "T12:00:00Z")) && (/* @__PURE__ */ new Date(v + "T12:00:00Z")).toISOString().slice(0, 10) === v;
 var dates = array(object({ date, hour, original: optional(text(100)) }), 364);
-var rules2 = object(Object.fromEntries(Object.keys(defaultRules).map((k) => [k, k === "paymentReviewHours" ? optional(number(1, 366, true)) : number(1, k.endsWith("Weeks") ? 52 : 366, true)])));
+var rules2 = object(Object.fromEntries(Object.keys(defaultRules).map((k) => [k, k.endsWith("LeadHours") ? optional(number(0, 8760, true)) : k === "paymentReviewHours" ? optional(number(1, 366, true)) : number(1, k.endsWith("Weeks") ? 52 : 366, true)])));
 var prices = object({ "1": number(0.01, 1e6), "2": number(0.01, 1e6), "3": number(0.01, 1e6) });
 var photo = (v) => typeof v === "string" && (v === "" || v.length <= 29e5 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v));
 var fields = {
@@ -1099,6 +1111,10 @@ function applyCommand(source, userId, input, serverNow) {
   const me = identityAccount(db, userId);
   if (me.mustChangePassword) throw Error("Najpierw zmie\u0144 has\u0142o tymczasowe.");
   const cmd = parseCommand(input);
+  if (cmd.type === "settings" && cmd.rules) {
+    cmd.rules.consultationLeadHours ??= rules(db).consultationLeadHours ?? 24;
+    cmd.rules.trainingLeadHours ??= rules(db).trainingLeadHours ?? 24;
+  }
   if (cmd.type === "settings" && cmd.rules && !cmd.rules.paymentReviewHours) cmd.rules.paymentReviewHours = rules(db).paymentReviewHours || 72;
   if (cmd.type === "payHold" && me.role !== "admin") throw Error("Op\u0142at\u0119 mo\u017Ce potwierdzi\u0107 wy\u0142\u0105cznie administrator.");
   db.accounts.sort((a, b) => Number(b.id === userId) - Number(a.id === userId));
@@ -1133,7 +1149,7 @@ function parseTrainer(value) {
 }
 
 // server/relational-store.ts
-var ruleColumns = { renewalDays: "renewal_days", cycleWeeks: "cycle_weeks", validWeeks: "validity_weeks", coachHoldHours: "coach_hold_hours", checkoutMinutes: "checkout_minutes", paymentReviewHours: "payment_review_hours", protectionDays: "protection_days", consultationDays: "consultation_days", startDays: "start_days", substituteHours: "substitute_hours", freezeDays: "freeze_days" };
+var ruleColumns = { renewalDays: "renewal_days", cycleWeeks: "cycle_weeks", validWeeks: "validity_weeks", coachHoldHours: "coach_hold_hours", checkoutMinutes: "checkout_minutes", paymentReviewHours: "payment_review_hours", consultationLeadHours: "consultation_lead_hours", trainingLeadHours: "training_lead_hours", protectionDays: "protection_days", consultationDays: "consultation_days", startDays: "start_days", substituteHours: "substitute_hours", freezeDays: "freeze_days" };
 var money2 = (n) => n === void 0 ? null : Math.round(n * 100);
 var iso = (value) => value ? new Date(value).toISOString() : void 0;
 var wall = (value) => new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Warsaw", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(value));
@@ -1657,11 +1673,14 @@ function createHandler(config, fetcher = fetch) {
             if (typeof body.password !== "string" || body.password.length < 12 || body.password.length > 200) throw Error("Has\u0142o musi mie\u0107 od 12 do 200 znak\xF3w.");
             if (body.action === "changePassword" && !passwordUpdated) {
               if (typeof body.oldPassword !== "string" || body.oldPassword === body.password) throw Error("Wpisz inne has\u0142o ni\u017C dotychczasowe.");
+              let verified;
               try {
-                await auth("/token?grant_type=password", "POST", { email: me.email, password: body.oldPassword });
+                verified = await auth("/token?grant_type=password", "POST", { email: me.email, password: body.oldPassword });
               } catch {
-                await auth("/token?grant_type=password", "POST", { email: me.email, password: body.password });
+                verified = await auth("/token?grant_type=password", "POST", { email: me.email, password: body.password });
+                passwordUpdated = true;
               }
+              if (verified.user?.id !== me.id) throw Error("Nie uda\u0142o si\u0119 potwierdzi\u0107 to\u017Csamo\u015Bci konta.");
             }
             next = structuredClone(db);
             if (!passwordUpdated) {
