@@ -81,3 +81,23 @@ test('ACO-03: expired substitute keeps their earnings and minimal historical ide
  await pg.query("insert into public.aco_earnings(id,session_id,trainer_id,kind,hours,rate_grosz,amount_grosz,month) values($1,$1,$2,'consultation',1.5,5000,7500,date_trunc('month',aco_private.app_now())::date)",[session,id(3)]);
  const response=await handle(request(3,{action:'state'})),view=await response.json();assert.equal(response.status,200);assert.equal(view.db.sessions.find((s:any)=>s.id===session)?.earned,75);const client=view.db.clients.find((c:any)=>c.id===id(1));assert.equal(client.email,'');assert.deepEqual(client.answers,[]);assert.equal(client.trainerId,'');
 });
+
+test('REG-02: resetting time preserves committed claims after availability edits and never revives an elapsed checkout',async()=>{
+ const sid=id(970),hid=id(971),requestId=id(972);
+ await pg.query("insert into public.aco_sessions(id,client_id,trainer_id,kind,starts_at,ends_at,status) values($1,$2,$3,'consultation',now()+interval '1 day',now()+interval '1 day 90 minutes','scheduled')",[sid,id(2),id(3)]);
+ await pg.query('insert into public.aco_calendar_claims(trainer_id,starts_at,client_id,session_id) select trainer_id,starts_at,client_id,id from public.aco_sessions where id=$1',[sid]);
+ await pg.query("select public.aco_set_test_clock($1,$2,$3,$4,now()+interval '3 days')",[id(4),id(104),id(973),'a'.repeat(64)]);
+ await pg.query('delete from public.aco_availability where trainer_id=$1',[id(3)]);
+ await pg.query("insert into public.aco_holds(id,client_id,trainer_id,product_id,intensity,starts_on,expires_at,price_grosz,status,kind) values($1,$2,$3,'personal',1,current_date+1,now()+interval '1 day',0,'active','checkout')",[hid,id(2),id(3)]);
+ await pg.query("insert into public.aco_calendar_claims(trainer_id,starts_at,client_id,hold_id) values($1,now()+interval '2 days',$2,$3)",[id(3),id(2),hid]);
+ await pg.query('select public.aco_set_test_clock($1,$2,$3,$4,null)',[id(4),id(104),requestId,'b'.repeat(64)]);
+ assert.equal((await pg.query<any>('select time_offset_seconds from aco_private.test_clock')).rows[0].time_offset_seconds,0);
+ assert.equal((await pg.query<any>('select status from public.aco_holds where id=$1',[hid])).rows[0].status,'expired');
+ assert.equal((await pg.query<any>('select count(*)::int n from public.aco_calendar_claims where hold_id=$1',[hid])).rows[0].n,0);
+ assert.equal((await pg.query<any>('select count(*)::int n from public.aco_calendar_claims where session_id=$1',[sid])).rows[0].n,1);
+ const version=(await pg.query<any>('select version from aco_private.test_clock')).rows[0].version;
+ await pg.query('select public.aco_set_test_clock($1,$2,$3,$4,null)',[id(4),id(104),requestId,'b'.repeat(64)]);
+ assert.equal((await pg.query<any>('select version from aco_private.test_clock')).rows[0].version,version);
+ await assert.rejects(pg.query('select public.aco_set_test_clock($1,$2,$3,$4,null)',[id(3),id(103),id(974),'c'.repeat(64)]),/Admin required/);
+ await assert.rejects(pg.query('select aco_private.rebuild_calendar($1,$2)',[[id(2)],[id(3)]]),/Reservation outside trainer availability/);
+});
