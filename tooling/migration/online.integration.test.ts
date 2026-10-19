@@ -102,7 +102,7 @@ test('registration never returns a false success for an existing email or email 
  const command={type:'register',name:'New client',email:'new@example.test',phone:'500600700',birthDate:'1990-01-01',trainerId:id(3),date:dayAdd(dateOf(new Date()),1),hour:11,answers:['Test']};
  const call=(requestId:string,cmd=command)=>handle(new Request('https://project.supabase.co/functions/v1/aco-api',{method:'POST',headers:{Origin:'https://acofitness.github.io'},body:JSON.stringify({action:'register',requestId,command:cmd})}));
  assert.equal((await call(id(800))).status,200);
- const duplicate=await call(crypto.randomUUID(),{...command,date:dayAdd(dateOf(new Date()),2)});assert.equal(duplicate.status,422);const rejected=await duplicate.json();assert.equal(rejected.ok,undefined);assert.match(rejected.error,/Nie zapisano nowej konsultacji/);
+ const duplicate=await call(crypto.randomUUID(),{...command,date:dayAdd(dateOf(new Date()),2)});assert.equal(duplicate.status,422);const rejected=await duplicate.json();assert.equal(rejected.ok,undefined);assert.match(rejected.error,/Sprawdź poprawność danych/);
  await pg.query('delete from aco_private.request_limits');
  const email='limited@example.test',key=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('register-email:'+email))).toString('hex');
  for(let i=0;i<12;i++)await pg.query('select public.aco_rate_limit($1,12,3600)',[key]);
