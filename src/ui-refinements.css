@@ -1,0 +1,273 @@
+/* Finishing pass: preserve the established ACO palette and component structure. */
+:root{--ui-text-secondary:#626b64;--ui-action-text:#a33f2d}
+button, input, textarea{touch-action:manipulation}
+button svg{flex-shrink:0}
+button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--aco-coral);outline-offset:3px}
+input:focus-visible,textarea:focus-visible{outline:2px solid #f05a4740;outline-offset:2px}
+.button:disabled,.trainer-action:disabled{cursor:not-allowed}
+.page-heading{gap:20px}
+.page-heading h1{line-height:1.25}
+.page-heading p{line-height:1.6}
+.page-heading>div,.card-heading>div{min-width:0}
+.stat>strong,.stat .date-stat,.product-price strong,.session-time,.info-line strong,.amount-input input,.financial-table td,.sales-history td{font-variant-numeric:tabular-nums}
+.stat>strong{letter-spacing:-.6px}
+.aco-select{min-width:0;max-width:100%}
+.aco-select-trigger{gap:10px;width:100%;min-width:0;line-height:1.4}
+.aco-select-value{flex:1;min-width:0;text-align:left;overflow-wrap:anywhere}
+.aco-select-trigger>svg{flex:0 0 16px}
+.aco-popover{box-sizing:border-box;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.aco-options button{min-width:0;gap:12px;overflow-wrap:anywhere;text-align:left;line-height:1.5}
+.aco-options button>svg{flex:0 0 15px}
+.select-empty{margin:0;padding:18px 12px;font-size:13px;color:var(--ui-text-secondary);line-height:1.5}
+.field>span{line-height:1.45}
+.field .aco-date,.field .aco-select,.field .password-entry{width:100%}
+.date-entry{min-width:0}
+.date-entry input{min-width:0;font-variant-numeric:tabular-nums}
+.trainers-page-heading{align-items:center;margin-bottom:20px}
+.trainers-page-heading h1{margin:0}
+.trainers-archive-toggle{margin:0 0 16px}
+.client-heading-name h2,.modal-title h2{overflow-wrap:anywhere;line-height:1.35}
+.client-heading-identity{min-width:0}
+.client-heading-identity p{overflow-wrap:anywhere;line-height:1.5}
+.info-line{gap:12px}
+.info-line>strong,.info-line>.text-button{min-width:0;overflow-wrap:anywhere;line-height:1.5}
+@media(max-width:1100px) and (min-width:761px){
+ .workspace>main{padding:28px 24px 40px}
+ .stats-grid{gap:14px}
+ .stat{padding:20px}
+ .stat>strong{font-size:clamp(20px,2.4vw,30px)}
+}
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){
+ .page-heading{gap:12px}
+ .trainers-page-heading{justify-content:space-between;flex-wrap:nowrap}
+ .trainers-page-heading>.button{padding:10px 12px;font-size:12px;flex-shrink:0}
+ .trainers-page-heading h1{font-size:24px!important}
+ .clients-table .table-toolbar>.aco-select{align-self:stretch}
+ .clients-table .table-toolbar .aco-select-trigger{height:100%;min-height:48px}
+ .clients-table td:nth-child(3),.clients-table td:nth-child(4){grid-template-columns:108px minmax(0,1fr)}
+ .mobile-menu-dialog nav button{min-width:0;overflow-wrap:anywhere;line-height:1.45}
+ .mobile-menu-dialog footer button{min-width:0;font-size:12px;gap:8px}
+ .topbar>span{line-height:1.4;flex:1}
+ .top-actions{flex-shrink:0}
+ .dialog .client-modal-heading{padding-right:42px!important;gap:12px}
+ .client-heading-name{align-items:flex-start;gap:8px}
+ .client-heading-name h2{font-size:19px}
+ .client-edit-profile{flex-shrink:0}
+ .client-primary-actions{margin:18px 0 16px}
+ .info-line{display:grid;grid-template-columns:20px minmax(0,1fr);gap:6px 10px;align-items:start}
+ .info-line>svg{grid-row:1 / span 2;margin-top:2px}
+ .info-line>span{grid-column:2;font-size:12px;line-height:1.5;color:var(--ui-text-secondary)}
+ .info-line>strong,.info-line>.text-button{grid-column:2;text-align:left;justify-content:flex-start;max-width:100%;font-size:14px}
+ .plan-facts{gap:12px}
+ .plan-facts dd{overflow-wrap:anywhere}
+ .session-actions .button{min-width:0}
+ .stat .date-stat{white-space:normal;line-height:1.4;font-size:23px}
+ .aco-options button{min-height:44px;font-size:14px}
+ .mini-calendar .mini-days button{min-height:38px}
+}
+@media(max-width:360px){
+ .workspace>main{padding-inline:12px}
+ .page-heading h1{font-size:23px!important}
+ .trainers-page-heading>.button{font-size:11px;padding-inline:9px}
+ .clients-table td:nth-child(3),.clients-table td:nth-child(4){grid-template-columns:92px minmax(0,1fr);gap:10px}
+ .mobile-menu-dialog{padding-inline:16px!important}
+}
+@media(prefers-reduced-motion:reduce){
+ html{scroll-behavior:auto!important}
+ *,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+}
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){
+ .message-toolbar>.aco-select{flex:0 0 125px;min-width:125px}
+ .message-toolbar .aco-select-trigger{padding:10px 12px;min-height:44px;height:auto;font-size:13px!important}
+ .message-toolbar .aco-select-value{overflow-wrap:normal}
+ .message-toolbar .filter-tabs button{min-height:44px;padding:10px 12px}
+ .letter-open h3{font-size:15px;line-height:1.45}
+ .letter-open small{font-size:12px;line-height:1.5}
+ .notification-popover h3{line-height:1.4}
+}
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){
+ .info-line>strong,.info-line>.text-button{justify-self:stretch;margin-left:0;width:auto}
+ .message-row h3{font-size:15px;line-height:1.45}
+ .message-row small{font-size:12px;line-height:1.5}
+ .message-row .message-identity{line-height:1.5}
+ .message-row p{line-height:1.6}
+}
+.team-tooltip-floating{max-width:calc(100vw - 24px);font-size:13px;line-height:1.5}
+.team-tooltip-floating .team-tooltip-session{min-height:44px;width:100%;text-align:left;overflow-wrap:anywhere}
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){.page-heading{display:flex}.trainers-page-heading{flex-wrap:nowrap}.week-nav>strong{line-height:1.5}}
+/* Keep close/back controls in their own rail, clear of editable content. */
+.dialog-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex:0 0 auto;padding:8px 18px;border-bottom:1px solid #efede8;background:white;border-radius:14px 14px 0 0}
+.dialog-toolbar>span{font-size:12px;color:var(--ui-text-secondary);font-weight:500;line-height:1.5}
+.dialog-toolbar>.dialog-close{position:static;float:none;margin:0;width:36px;height:36px;flex:0 0 36px;background:transparent}
+.dialog-toolbar>.dialog-close:hover{background:#f7f4ef}
+.dialog-toolbar>.dialog-back{margin:0;min-height:36px;gap:6px;font-size:13px}
+.dialog:has(>.dialog-toolbar) .dialog-inner>h2{position:static;margin:0 0 12px;padding:0;min-height:0;line-height:1.4}
+.dialog:has(>.dialog-toolbar) .dialog-inner>.modal-title,.dialog:has(>.dialog-toolbar) .dialog-inner>.client-modal-heading{position:static;top:auto;margin-top:0;padding-top:0;padding-right:0!important}
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){
+ .dialog-toolbar{border-radius:0;padding:6px 12px}
+ .dialog-toolbar>.dialog-close{width:44px;height:44px;flex-basis:44px}
+ .dialog-toolbar>.dialog-back{min-height:44px}
+ .dialog-toolbar>span{font-size:13px}
+}
+/* Reuse the established people cards when a sidebar leaves too little room for tables. */
+@media(min-width:761px) and (max-width:1050px){
+ .clients-table table,.clients-table tbody,.trainers-table table,.trainers-table tbody{display:block;min-width:0;width:100%}
+ .clients-table thead,.trainers-table thead{display:none}
+ .clients-table td,.trainers-table td{display:block;border:0!important;min-width:0;overflow-wrap:anywhere}
+ .clients-table td:last-child{display:none}
+ .clients-table td:nth-child(3)::before{content:'Pakiet'}
+ .clients-table td:nth-child(4)::before{content:'Następne spotkanie'}
+ .clients-table .table-toolbar .aco-select-trigger{height:100%;min-height:44px}
+ .clients-table .table-toolbar .search-input{min-height:44px}
+ .clients-table .table-toolbar .search-input input{font-size:14px}
+ .trainers-table .trainer-action{min-height:44px}
+ .list-layout>aside{display:none}
+}
+.toast{display:flex;align-items:center;gap:16px}
+.toast>span{flex:1;min-width:0;overflow-wrap:anywhere;line-height:1.5}
+.toast>button{flex:0 0 36px;width:36px;height:36px;display:grid;place-items:center}
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){.toast>button{flex-basis:44px;width:44px;height:44px}.toast{padding:8px 12px}}
+@media(min-width:761px) and (max-width:1050px){
+ .desktop-table{display:none}
+ .mobile-records{display:block;width:100%}
+ .mobile-record{padding:18px 22px;border-top:1px solid #ebe7e1}
+ .mobile-record summary{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:44px;cursor:pointer;list-style:none}
+ .mobile-record summary::-webkit-details-marker{display:none}
+ .mobile-record summary strong{font-size:14px;overflow-wrap:anywhere}
+ .mobile-record summary span{font-size:13px;color:#8f4937;white-space:nowrap}
+ .mobile-record[open] summary{padding-bottom:16px}
+ .mobile-record dl{margin:0;display:grid;gap:12px}
+ .mobile-record dl>div{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}
+ .mobile-record dt{font-size:13px;color:var(--ui-text-secondary);flex:1;line-height:1.5}
+ .mobile-record dd{margin:0;font-size:14px;text-align:right;max-width:65%;overflow-wrap:anywhere;line-height:1.5}
+ .mobile-record dd .button{font-size:13px;min-height:44px}
+ .financial-table,.sales-history,.active-promotions{overflow:hidden}
+}
+.mobile-record summary small{display:inline-block;transition:transform .15s}
+.mobile-record[open] summary small{transform:rotate(180deg)}
+.mobile-record summary:focus-visible{border-radius:6px}
+@media(min-width:761px) and (max-width:1050px){.clients-table tbody,.trainers-table tbody{display:grid;gap:14px}}
+@media(min-width:950px) and (max-width:1050px){.clients-table tbody,.trainers-table tbody{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* A deeper shade of the existing accent keeps small action text legible. */
+.text-button,.nav-item.active{color:var(--ui-action-text)}
+.public-notes .note-visibility-heading{color:var(--ui-action-text)}
+.current-package-card dl dt,.current-package-card .package-usage,.package-count small,.selected-dates-preview{color:var(--ui-text-secondary)}
+.dashboard-date{text-transform:none!important;letter-spacing:0}
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){
+ .current-package-card .package-count{margin:20px 0;padding:0}
+ .package-count small{font-size:12px;line-height:1.5}
+ .day-nav>button{min-height:44px}
+ .day-nav>button:not(.day-today){width:44px}
+ .day-nav>.day-today{padding-inline:14px}
+}
+@media(max-width:1050px){
+ .clients-table .name-cell>span:last-child{white-space:normal;min-width:0;overflow-wrap:anywhere}
+ .trainer-name strong{white-space:normal;overflow-wrap:anywhere}
+}
+@media(max-width:1050px){.clients-table td:nth-child(2)>span{display:block;white-space:normal;overflow-wrap:anywhere;line-height:1.6}}
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){body{min-width:0}}
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){
+ .stats-grid .stat>strong.stat-currency{font-size:clamp(18px,5vw,25px);letter-spacing:-.7px}
+ .stats-grid .stat.stat-long-value{grid-column:1 / -1}
+ .journal-selects .aco-select-trigger{font-size:13px!important;padding:10px 12px;min-height:48px;height:100%}
+ .journal-selects .aco-select-value{overflow-wrap:normal}
+ .journal-selects .aco-select{align-self:stretch}
+ .journal-filters{flex-wrap:wrap;overflow:visible;gap:6px}
+ .journal-filters button{min-height:40px;font-size:12px;padding:9px 12px}
+}
+/* Short landscape phones keep mobile navigation without losing the content area. */
+@media(max-width:1000px) and (max-height:500px) and (orientation:landscape){
+ .topbar{height:52px;min-height:52px;padding-block:4px}
+ .workspace>main{padding-top:14px;padding-bottom:calc(70px + env(safe-area-inset-bottom))}
+ .mobile-bottom-nav{padding-block:4px;padding-bottom:calc(4px + env(safe-area-inset-bottom))}
+ .mobile-bottom-nav button{min-height:44px;flex-direction:row;gap:7px;font-size:11px}
+ .mobile-bottom-nav button>svg{width:18px;height:18px}
+ .page-heading{margin-bottom:14px}
+ .page-heading h1{font-size:23px!important;margin:0 0 4px}
+ .page-heading p{margin:0}
+ .calendar-toolbar{display:flex;flex-wrap:nowrap;gap:12px;padding:12px}
+ .calendar-toolbar>.week-nav{width:auto;flex:1;grid-template-columns:44px minmax(140px,1fr) 44px}
+ .calendar-toolbar>.button{width:auto;flex:0 0 auto;margin:0}
+ .calendar-toolbar>.aco-select{width:auto;flex:1;max-width:260px}
+ .calendar-view-tabs{margin-bottom:12px}
+ .stats-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr))}
+ .stats-grid.three{grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr))}
+ .stats-grid.three>.stat:last-child{grid-column:auto}
+ .client-overview{grid-template-columns:minmax(0,1.3fr) minmax(0,1fr)!important}
+ .mobile-menu-dialog[open]{max-height:100dvh;border-radius:0;padding-top:12px}
+ .mobile-menu-dialog header{margin-bottom:8px}
+ .mobile-menu-dialog nav{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:650px) and (max-height:500px) and (orientation:landscape){
+ .calendar-toolbar{display:grid;grid-template-columns:44px minmax(0,1fr)}
+ .calendar-toolbar>.week-nav{grid-column:1 / -1;width:100%}
+ .calendar-toolbar>.aco-select{width:100%;max-width:none}
+ .client-overview{grid-template-columns:minmax(0,1fr)!important}
+ .mobile-menu-dialog nav{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+.aco-popover{display:flex;flex-direction:column;overflow:hidden}
+.aco-popover>.select-search{flex:0 0 auto;min-width:0}
+.aco-popover>.aco-options{flex:1 1 auto;min-height:0;max-height:none;overflow:auto;overscroll-behavior:contain}
+.aco-popover>.mini-calendar,.aco-popover>.more-actions-menu{min-height:0;overflow:auto;overscroll-behavior:contain}
+.aco-popover .mini-calendar>header{position:sticky;top:0;background:white;z-index:2}
+.aco-popover .mini-calendar>footer{position:sticky;bottom:0;background:white;z-index:2}
+.date-error{color:var(--ui-action-text);font-size:12px;line-height:1.5}
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){
+ .password-entry>button{width:44px;min-width:44px;height:44px}
+ .password-entry input{padding-right:52px}
+}
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){
+ .dialog[open],.dialog.wide{width:100%!important;max-width:100%!important}
+}
+
+/* Dates and custom controls use their own grid instead of legacy input flex widths. */
+.wizard-date-row{display:grid;grid-template-columns:27px minmax(90px,1fr) minmax(150px,170px) minmax(105px,130px)!important;gap:12px;align-items:center}
+.wizard-date-row>div{min-width:0;flex:none}
+.wizard-date-row input{margin-left:0;max-width:none;width:100%;font-size:14px;padding:10px}
+.wizard-date-row .aco-select-trigger{font-size:14px}
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){
+.wizard-date-row{grid-template-columns:27px minmax(0,1.2fr) minmax(0,1fr)!important;gap:10px;padding:14px 0}
+.wizard-date-row>div:nth-child(2){grid-column:2 / -1;min-width:0}
+.wizard-date-row>.aco-date{grid-column:1 / 3;min-width:0}
+.wizard-date-row>.aco-select{grid-column:3;min-width:0}
+.wizard-date-row input{margin-left:0;font-size:16px!important}
+.wizard-date-row .aco-select-trigger{font-size:16px!important}
+.wizard-date-row strong{font-size:14px}.wizard-date-row small{font-size:12px}
+}
+
+@media(max-width:360px){.wizard-date-row{grid-template-columns:27px minmax(0,1fr)!important}.wizard-date-row>.aco-date,.wizard-date-row>.aco-select{grid-column:2}}
+
+.reservation-date-editor{padding:16px 0;border-bottom:1px solid #eee9e3}.reservation-date-editor .field{margin:0}.reservation-date-editor+.reservation-date-editor{margin-top:4px}
+
+.auth-registration h1{scroll-margin-top:20px}.auth-header .filter-tabs button.active{color:var(--ui-action-text)}
+
+dl dd{min-width:0;overflow-wrap:anywhere;line-height:1.5}
+.auth-registration dl{grid-template-columns:100px minmax(0,1fr);max-width:100%}
+.dialog-toolbar>.dialog-close{font-size:24px}
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){
+.auth-registration dl{grid-template-columns:minmax(0,1fr);gap:5px}
+.auth-registration dl dt{font-size:12px;padding-bottom:0;color:var(--ui-text-secondary)}
+.auth-registration dl dd{text-align:left;font-size:14px;margin:0 0 14px}
+}
+
+/* Polish month names retain their natural lowercase spelling. */
+.journal-day-heading{text-transform:none}
+
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){
+ .stats-grid:has(>.stat:nth-child(4).stat-long-value)>.stat:nth-child(3){grid-column:1 / -1}
+}
+
+@media(max-width:390px){.stats-grid.three>.stat:has(>.stat-currency){grid-column:1 / -1}}
+
+@media(max-width:760px),(max-width:1000px) and (max-height:500px) and (orientation:landscape){
+ .comments-panel{min-height:0;padding:18px}
+ .comments{max-height:none;overflow:visible;margin:16px 0}
+ .empty-comments{margin:28px 0}
+ .comment-input{min-width:0}.comment-input textarea{min-width:0}
+}
+
+/* Supporting copy stays readable at normal phone viewing distance. */
+.hint,.public-comment-label,.mobile-calendar-hint,.empty-comments p{color:var(--ui-text-secondary);line-height:1.6}
+.agenda-day small{font-size:12px;color:var(--ui-text-secondary);line-height:1.5}
+.agenda-session small{font-size:12px;color:var(--ui-text-secondary);line-height:1.5}
+.agenda-empty{font-size:13px;color:var(--ui-text-secondary)}
