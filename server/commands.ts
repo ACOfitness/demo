@@ -21,14 +21,14 @@ const photo:Check=v=>typeof v==='string'&&(v===''||v.length<=2900000&&/^data:ima
 const fields:Record<string,Record<string,Check>>={
  standardPlan:{clientId:id,intensity:number(1,3,true)},
  individualPlan:{clientId:id,plan:object({service,intensity:number(1,7,true),cycleWeeks:number(1,52,true),validWeeks:number(1,104,true),price:optional(number(.01,1000000))})},reviewPlan:{clientId:id,approve:choice(true,false),price:optional(number(.01,1000000))},
- saveLocation:{id,name:text(200,1),address:text(500)},sessionLocation:{id,locationId:id},
+ deleteLocation:{id},saveLocation:{id,name:text(200,1),address:text(500)},sessionLocation:{id,locationId:id},
  clientProfile:{id,name:text(200,1),phone:text(40),birthDate:date,answers:array(text(2000),20),photo:optional(photo)},
  updateProfile:{name:text(200,1),email:text(254,3),phone:text(40),photo},
  availability:{trainerId:id,days:array(day,7),hours:array(hour,24),weeklyHours:optional(object(Object.fromEntries(Array.from({length:7},(_,i)=>[String(i),optional(array(hour,24))]))))},
  requestPayment:{id,code:optional(text(100))},confirmConsultation:{id},
  transferClient:{clientId:id,trainerId:id},deleteTrainer:{id},birthDate:{id,value:date},
  sendLetter:{to:id,subject:text(200,1),body:text(20000,1)},readLetter:{id,read:optional(choice(true,false))},readNotice:{id,read:optional(choice(true,false))},readAll:{folder:choice('received','notifications')},
- outcome:{id,status:choice('completed','no_show','cancelled_early','cancelled_late','cancelled_trainer')},
+ outcome:{id,status:choice('scheduled','completed','no_show','cancelled_early','cancelled_late','cancelled_trainer')},
  notes:{id,publicNote:text(20000),privateNote:text(20000)},comment:{id,text:text(10000,1)},reschedule:{id,date,hour,holidayOverride:optional(choice(true,false)),ignoreLimits:optional(choice(true,false))},
  activate:{id,service,intensity:number(1,7,true)},
  hold:{clientId:id,start:date,slots:array(object({day,hour}),7),dates,holidayOverride:optional(choice(true,false)),ignoreLimits:optional(choice(true,false))},payHold:{id,code:optional(text(100))},
@@ -92,4 +92,9 @@ export function parseRegistration(value:unknown):Extract<Command,{type:'register
 export function parseTrainer(value:unknown):import('../src/auth').TrainerInput {
  if(!object({description:optional(text(2000)),locationId:optional(id),consultationRate:optional(number(.01,1000000)),id:optional(id),name:text(200,1),email:text(254,3),products:array(service,2),productRates:object({personal:number(0,1000000),physio:number(0,1000000)}),days:array(day,7),hours:array(hour,24),password:text(200),phone:text(40),pesel:text(11),student:choice(true,false),address:text(500),taxOffice:text(200),photo})(value))throw Error('Nieprawidłowe dane trenera.');
  return structuredClone(value) as import('../src/auth').TrainerInput;
+}
+
+export function parseAdminClient(value:unknown):import('../src/admin-client-model').AdminClientInput {
+ if(!object({name:text(200,1),email:text(254,3),phone:text(40,1),birthDate:date,trainerId:id,answers:array(text(2000),20),mode:choice('consultation','skip'),date:optional(date),hour:optional(hour),service:optional(service),intensity:optional(number(1,3,true))})(value))throw Error('Sprawdź dane klienta.');
+ return structuredClone(value) as import('../src/admin-client-model').AdminClientInput;
 }

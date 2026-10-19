@@ -52,7 +52,7 @@ export async function publicAction(body:any,req:Request,services:AccountServices
  if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash('register-email:'+email),p_max:12,p_seconds:3600}))throw Error('Nie zapisano konsultacji: zbyt wiele prób dla tego adresu. Skontaktuj się z administratorem.');
  if(!validBirthDate(command.birthDate||'',db.now))throw Error('Podaj poprawną datę urodzenia.');
  if(command.date>dayAdd(dateOf(new Date(db.now)),rules(db).consultationDays)||!available(db,command.trainerId,command.date,command.hour)||!available(db,command.trainerId,command.date,command.hour+1))throw Error('Wybrany termin nie jest dostępny.');
- if(db.accounts.some(a=>a.email===email))throw Error('Nie zapisano nowej konsultacji. Sprawdź wcześniejsze zgłoszenie lub skontaktuj się z administratorem.');
+ if(db.accounts.some(a=>a.email===email))throw Error('Sprawdź poprawność danych. Jeśli masz już konto lub umówioną konsultację, zaloguj się albo skontaktuj się z ACO!.');
  if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash('registration-global'),p_max:60,p_seconds:3600}))throw Error('Zbyt wiele rejestracji. Spróbuj ponownie później.');
  // Validate all scheduling rules before provisioning an Auth identity.
  await registerAccount(db,command);
@@ -61,7 +61,7 @@ export async function publicAction(body:any,req:Request,services:AccountServices
  let userId=await recover();
  if(!userId){
   try{const user=await auth('/admin/users','POST',{email,password:crypto.randomUUID()+crypto.randomUUID(),email_confirm:false,app_metadata:{aco_registration:{requestId:body.requestId,hash:registrationHash}}});userId=user.id}
-  catch(error){userId=await recover();if(!userId)throw error}
+  catch(error){userId=await recover();if(!userId)throw Error('Sprawdź poprawność danych. Jeśli masz już konto lub umówioną konsultację, zaloguj się albo skontaktuj się z ACO!.')}
  }
  if(typeof userId!=='string')throw Error('Nie udało się utworzyć konta.');
  let committed=false;

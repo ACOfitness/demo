@@ -1,3 +1,5 @@
+import {prepareAdminClient} from '../src/admin-client-model';
+import {parseAdminClient} from './commands';
 import {API_VERSION} from '../src/api-version';
 import {quote} from '../src/business';
 import {canSee} from '../src/domain';
@@ -54,7 +56,7 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
    while(true){const part=await reader.read();if(part.done)break;size+=part.value.byteLength;if(size>3000000){await reader.cancel();throw new ApiError(413,'Formularz jest zbyt duży.')}chunks.push(part.value)}
    const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length}
    let body;try{body=JSON.parse(new TextDecoder().decode(bytes))}catch{throw new ApiError(400,'Nieprawidłowy formularz.')}
-   const allowed:Record<string,string[]>={adminEmail:['requestId','accountId','email','confirmation'],accountLifecycle:['requestId','accountId','mode','confirmation'],testClock:['requestId','target'],state:['cacheTag'],quote:['id','code'],command:['requestId','command'],publicState:[],register:['requestId','command'],activation:['email','birthDate','password','requestId'],trainer:['requestId','input'],resetPassword:['requestId','accountId'],changePassword:['requestId','oldPassword','password']};
+   const allowed:Record<string,string[]>={adminClient:['requestId','input'],adminEmail:['requestId','accountId','email','confirmation'],accountLifecycle:['requestId','accountId','mode','confirmation'],testClock:['requestId','target'],state:['cacheTag'],quote:['id','code'],command:['requestId','command'],publicState:[],register:['requestId','command'],activation:['email','birthDate','password','requestId'],trainer:['requestId','input'],resetPassword:['requestId','accountId'],changePassword:['requestId','oldPassword','password']};
    if(!body||typeof body!=='object'||Array.isArray(body)||!Object.hasOwn(allowed,body.action)||Object.keys(body).some(k=>k!=='action'&&!allowed[body.action].includes(k)))throw new ApiError(400,'Nieprawidłowe żądanie.');
    if(['publicState','register','activation'].includes(body.action)){
     if((body.action==='register'||body.action==='activation'&&body.password!==undefined)&&!uuid.test(body.requestId))throw new ApiError(400,'Brak identyfikatora operacji.');
@@ -147,6 +149,14 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
        command={...command,email:me.email};extra={notice:'Profil zapisany. Potwierdź zmianę adresu e-mail za pomocą otrzymanej wiadomości.'};
       }
       next=applyCommand(db,me.id,command,snapshot.now);
+      }else if(body.action==='adminClient'){
+      if(me.role!=='admin')throw Error('Tylko administrator może dodać klienta.');
+      const input=parseAdminClient(body.input),prepared=prepareAdminClient(db,input),email=input.email.trim().toLowerCase();
+      const recover=()=>rpc<string|null>('aco_registration_identity',{p_request:body.requestId,p_hash:requestHash,p_email:email});
+      let userId=await recover();
+      if(!userId){try{const user=await auth('/admin/users','POST',{email,password:crypto.randomUUID()+crypto.randomUUID(),email_confirm:false,app_metadata:{aco_registration:{requestId:body.requestId,hash:requestHash}}});userId=user.id}catch(error){userId=await recover();if(!userId)throw Error('Sprawdź adres e-mail. Może być już używany przez inne konto.');}}
+      if(typeof userId!=='string'||!uuid.test(userId))throw Error('Nie udało się utworzyć konta klienta.');
+      next=prepared.db;next.accounts.push({id:userId,email,role:'client',clientId:prepared.client.id});
      }else if(body.action==='trainer'){
       next=await trainerAction(db,body,me.id,{...services,auth:async(path,method,input,token)=>{
        if(path==='/admin/users'&&method==='POST'&&provisionedTrainerId)return {id:provisionedTrainerId};

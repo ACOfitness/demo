@@ -135,7 +135,7 @@ export function relationalCommitArgs(before:Database,after:Database,actorId:stri
  }
  for(const db of [before,after])for(const c of db.clients)if(clients.has(c.id)&&c.trainerId)trainers.add(c.trainerId);
  const actor=before.accounts.find(a=>a.id===actorId),profile=actor?.clientId||actor?.trainerId||actorId;
- const calendar=['individualPlan','reviewPlan','standardPlan','register','hold','editHold','payHold','makeup','reschedule','outcome','substitute','transferClient','block','unblock','freeze','validity','extend','availability'].includes(action);
+ const calendar=['adminClient','individualPlan','reviewPlan','standardPlan','register','hold','editHold','payHold','makeup','reschedule','outcome','substitute','transferClient','block','unblock','freeze','validity','extend','availability'].includes(action);
  const dependencies=baseline.filter(r=>r.table==='aco_accounts'&&r.key===actorId||r.table==='aco_profiles'&&r.key===profile||r.table==='aco_clients'&&clients.has(r.key)||r.table==='aco_trainers'&&trainers.has(r.key)||calendar&&['aco_settings','aco_product_prices','aco_promotions'].includes(r.table)).map(({table,key,version})=>({table,key,version}));
  return {p_clock_version:before.clockVersion||0,p_changes:delta.changes,p_removed:delta.removed,p_dependencies:dependencies,p_clients:[...clients].sort(),p_trainers:[...trainers].sort(),p_role:actor?.role||'registration',p_action:action};
 }
