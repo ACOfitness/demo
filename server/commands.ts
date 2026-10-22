@@ -19,6 +19,7 @@ const rules=object(Object.fromEntries(Object.keys(defaultRules).map(k=>[k,k.ends
 const prices=object({'1':number(.01,1000000),'2':number(.01,1000000),'3':number(.01,1000000)});
 const photo:Check=v=>typeof v==='string'&&(v===''||v.length<=2900000&&/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v));
 const fields:Record<string,Record<string,Check>>={
+ scheduleMode:{clientId:id,flexible:choice(true,false)},startDeadline:{packageId:id,date},
  standardPlan:{clientId:id,intensity:number(1,3,true)},
  individualPlan:{clientId:id,plan:object({service,intensity:number(1,7,true),cycleWeeks:number(1,52,true),validWeeks:number(1,104,true),price:optional(number(.01,1000000))})},reviewPlan:{clientId:id,approve:choice(true,false),price:optional(number(.01,1000000))},
  deleteLocation:{id},saveLocation:{id,name:text(200,1),address:text(500)},sessionLocation:{id,locationId:id},

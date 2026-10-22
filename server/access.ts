@@ -35,7 +35,7 @@ export function projectState(source:Database,userId:string):Database {
  const out:Database={recurringBusy:[...(source.recurringBusy||[]),...source.packages.filter(p=>!managed.has(p.clientId)&&!p.frozen&&p.protectionUntil>dateOf(new Date(source.now))).flatMap(p=>p.slots.map(s=>({...s,trainerId:source.clients.find(c=>c.id===p.clientId)?.trainerId||''}))),...source.holds.filter(h=>!managed.has(h.clientId)&&h.status==='active'&&h.expires>source.now).flatMap(h=>h.slots.map(s=>({...s,trainerId:h.trainerId})))],version:1,now:source.now,timeOffsetSeconds:source.timeOffsetSeconds,clockVersion:source.clockVersion,testToolsEnabled:admin&&source.testToolsEnabled,
  accounts:source.accounts.filter(a=>admin||contacts.has(a.id)).map(a=>({...safeAccount(a,a.id===me.id),...(admin?{pendingEmail:a.pendingEmail}:{})})),
  clients:source.clients.filter(c=>managed.has(c.id)||historical.has(c.id)).map(c=>managed.has(c.id)?{
- id:c.id,archived:c.archived,name:c.name,email:c.email,birthDate:c.birthDate,phone:c.phone,trainerId:c.trainerId,
+ id:c.id,flexibleSchedule:c.flexibleSchedule,archived:c.archived,name:c.name,email:c.email,birthDate:c.birthDate,phone:c.phone,trainerId:c.trainerId,
  individualPlan:c.individualPlan,planProposal:admin||me.role==='trainer'?c.planProposal:undefined,active:c.active,invited:c.invited,service:c.service,intensity:c.intensity,prescribed:c.prescribed,answers:[...c.answers],photo:c.photo
  }:{id:c.id,name:c.name,email:'',phone:'',trainerId:'',active:false,invited:false,service:c.service,intensity:0,prescribed:false,answers:[]}),
  trainers:source.trainers.filter(t=>admin||trainers.has(t.id)||!t.deleted).map(t=>{
