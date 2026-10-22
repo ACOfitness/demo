@@ -40,6 +40,7 @@ function quote(db, clientId, service2, intensity, code = "", baseOverride) {
   return { base, percent, total: Math.round(base * (100 - percent)) / 100, promotionId: chosen?.id, code: chosen?.kind === "code" ? chosen.value : void 0 };
 }
 function renewalAllowed(db, id2) {
+  if (db.packages.some((p2) => p2.clientId === id2 && p2.pendingStart)) return false;
   if (db.packages.some((p2) => p2.clientId === id2 && p2.start > dateOf(new Date(db.now)))) return false;
   const p = currentPackage(db, id2);
   return !p || p.validUntil <= dateOf(new Date(db.now)) || dateOf(new Date(db.now)) >= dayAdd(p.cycleEnd, -rules(db).renewalDays);
@@ -147,6 +148,8 @@ var currentPackage = (db, id2) => {
   return list[0];
 };
 var canSee = (db, a, c) => !!c && (a.role === "admin" || a.role === "client" && a.clientId === c.id && c.active || a.role === "trainer" && (a.trainerId === c.trainerId || db.substitutions.some((s) => s.clientId === c.id && s.trainerId === a.trainerId && s.until > db.now)));
+var holdCount = (h) => h.flexible ? h.intensity * (h.terms || defaultRules).cycleWeeks : h.dates.length;
+var initialQuotaRemaining = (db, p) => p.flexible && p.startDeadline ? Math.max(0, Math.min(p.intensity, p.count) - db.sessions.filter((s) => s.packageId === p.id && s.date <= p.startDeadline).length) : 0;
 function recurringOwner(db, trainerId, day2, hour2, clientId, ignoreHold) {
   const today = dateOf(new Date(db.now));
   if (db.recurringBusy?.some((s) => s.trainerId === trainerId && s.day === day2 && s.hour === hour2)) return "occupied";
@@ -376,6 +379,7 @@ function execute(source, a, cmd) {
       if (s.status !== "scheduled" || at(s.date, s.hour) <= now) throw Error("Mo\u017Cna prze\u0142o\u017Cy\u0107 tylko przysz\u0142y zaplanowany trening.");
       if (a.role === "client" && +at(s.date, s.hour) - +now < db.settings.cancelHours * 36e5) throw Error(`Zosta\u0142o mniej ni\u017C ${db.settings.cancelHours} h. Odwo\u0142aj sesj\u0119 (wej\u015Bcie przepadnie), a now\u0105 um\xF3w z wolnego wej\u015Bcia.`);
       const p = db.packages.find((p2) => p2.id === s.packageId);
+      if (p.flexible && p.startDeadline && s.date <= p.startDeadline && cmd.date > p.startDeadline && db.sessions.filter((x) => x.packageId === p.id && x.id !== s.id && x.date <= p.startDeadline && counts(x)).length < Math.min(p.intensity, p.count)) throw Error("Pierwsze treningi musz\u0105 pozosta\u0107 w terminie rozpocz\u0119cia pakietu.");
       if (cmd.date < p.start || cmd.date >= p.validUntil || p.frozen) throw Error("Termin jest poza wa\u017Cno\u015Bci\u0105 pakietu albo pakiet jest zamro\u017Cony.");
       if (!available(db, s.trainerId, cmd.date, cmd.hour, s.clientId, s.id, void 0, cmd.holidayOverride)) throw Error("Ten termin jest niedost\u0119pny.");
       if (!cmd.ignoreLimits) limitCheck(db, { ...db.clients.find((c) => c.id === s.clientId), intensity: p.intensity }, cmd.date, s.id);
@@ -405,6 +409,31 @@ function execute(source, a, cmd) {
       c.intensity = cmd.intensity;
       c.prescribed = true;
       audit(db, `Przypisano wariant: ${c.name}, ${c.intensity}\xD7 / tydzie\u0144`);
+      break;
+    }
+    case "scheduleMode": {
+      requireStaff(a);
+      const c = db.clients.find((c2) => c2.id === cmd.clientId);
+      if (!c || c.archived || a.role === "trainer" && c.trainerId !== a.trainerId) throw Error("Tryb ustala trener prowadz\u0105cy lub administrator.");
+      if (db.holds.some((h) => h.clientId === c.id && h.status === "active" && h.expires > db.now)) throw Error("Najpierw zako\u0144cz rozliczenie lub zaczekaj na wyga\u015Bni\u0119cie rezerwacji.");
+      c.flexibleSchedule = cmd.flexible;
+      audit(db, `Zmieniono spos\xF3b umawiania kolejnych pakiet\xF3w: ${c.name} \xB7 ${cmd.flexible ? "elastyczne godziny" : "sta\u0142e godziny"}`);
+      break;
+    }
+    case "startDeadline": {
+      requireAdmin(a);
+      const p = db.packages.find((p2) => p2.id === cmd.packageId);
+      if (!p?.flexible || !p.startDeadline || cmd.date < dateOf(now) || cmd.date < p.start) throw Error("Wybierz przysz\u0142\u0105 dat\u0119 dla elastycznego pakietu.");
+      const old = p.startDeadline;
+      p.startDeadline = cmd.date;
+      if (p.pendingStart) {
+        const cycle = p.cycleEnd, valid = p.validUntil;
+        const delta = Math.round((+at(cmd.date, 12) - +at(old, 12)) / 864e5);
+        p.cycleEnd = dayAdd(cycle, delta);
+        p.validUntil = dayAdd(valid, delta);
+        p.protectionUntil = p.validUntil;
+      }
+      audit(db, `Zmieniono termin pierwszych trening\xF3w pakietu ${p.id}: ${old} \u2192 ${cmd.date}`);
       break;
     }
     case "activate": {
@@ -466,7 +495,11 @@ function execute(source, a, cmd) {
       if (!renewalAllowed(db, c.id)) throw Error(`Kolejny pakiet mo\u017Cna kupi\u0107 ${rules(db).renewalDays} dni przed ko\u0144cem obecnego cyklu.`);
       if (!cmd.ignoreLimits && new Set(cmd.slots.map((s) => s.day)).size !== cmd.slots.length) throw Error("Wybierz najwy\u017Cej jeden trening w ka\u017Cdym dniu.");
       if (!canSee(db, a, c) || !c.prescribed) throw Error("Najpierw przypisz produkt klientowi.");
-      if (cmd.slots.length !== c.intensity || cmd.dates.length !== c.intensity * terms.cycleWeeks) throw Error("Wybierz wszystkie sta\u0142e godziny i terminy pakietu.");
+      if (c.flexibleSchedule ? cmd.slots.length !== 0 || cmd.dates.length !== 0 : cmd.slots.length !== c.intensity || cmd.dates.length !== c.intensity * terms.cycleWeeks) throw Error("Wybierz wszystkie sta\u0142e godziny i terminy pakietu.");
+      if (c.flexibleSchedule) {
+        const current = currentPackage(db, c.id), today = dateOf(now), start = current && current.validUntil > today && current.cycleEnd > today ? current.cycleEnd : today;
+        if (cmd.start !== start || start > dayAdd(today, terms.startDays)) throw Error("Od\u015Bwie\u017C pakiet i wybierz dost\u0119pny pocz\u0105tek.");
+      }
       if (db.packages.some((p) => p.clientId === c.id && cmd.start < (p.validUntil < p.cycleEnd ? p.validUntil : p.cycleEnd) && dayAdd(cmd.start, terms.cycleWeeks * 7) > p.start)) throw Error("Nowy cykl nie mo\u017Ce nak\u0142ada\u0107 si\u0119 na obecny.");
       if (db.holds.some((h) => h.clientId === c.id && h.status === "active" && h.expires > db.now)) throw Error("Ten klient ma ju\u017C rezerwacj\u0119 wst\u0119pn\u0105.");
       for (const slot of cmd.slots) {
@@ -483,17 +516,18 @@ function execute(source, a, cmd) {
         if (!cmd.ignoreLimits) limitCheck(db, c, d.date, void 0, selected);
         selected.push(d);
       }
-      if ([...cmd.dates].sort((a2, b) => a2.date.localeCompare(b.date))[c.intensity - 1].date > dayAdd(dateOf(new Date(db.now)), rules(db).startDays)) throw Error(`Pierwsze ${c.intensity} treningi musz\u0105 odby\u0107 si\u0119 w ci\u0105gu ${rules(db).startDays} dni od zakupu.`);
+      if (!c.flexibleSchedule && [...cmd.dates].sort((a2, b) => a2.date.localeCompare(b.date))[c.intensity - 1].date > dayAdd(dateOf(new Date(db.now)), rules(db).startDays)) throw Error(`Pierwsze ${c.intensity} treningi musz\u0105 odby\u0107 si\u0119 w ci\u0105gu ${rules(db).startDays} dni od zakupu.`);
       const first = Math.min(...cmd.dates.map((d) => +at(d.date, d.hour)));
       const expires = new Date(Math.min(+now + (a.role === "client" ? rules(db).checkoutMinutes / 60 : rules(db).coachHoldHours) * 36e5, first)).toISOString();
-      db.holds.unshift({ id: uid(), clientId: c.id, trainerId: c.trainerId, dates: cmd.dates, slots: cmd.slots, start: [...cmd.dates].sort((a2, b) => a2.date.localeCompare(b.date))[0].date, expires, service: c.service, intensity: c.intensity, price: quote(db, c.id, c.service, c.intensity).total, basePrice: quote(db, c.id, c.service, c.intensity).base, holidayOverride: !!cmd.holidayOverride, ignoreLimits: !!cmd.ignoreLimits, terms, status: "active", type: a.role === "client" ? "checkout" : "coach" });
-      notify(db, "Terminy czekaj\u0105 na op\u0142acenie", `Zarezerwowano ${cmd.dates.length} trening\xF3w z ${db.trainers.find((t) => t.id === c.trainerId)?.name}. Pierwszy: ${labelDate(cmd.dates.slice().sort((a2, b) => a2.date.localeCompare(b.date))[0].date)}. P\u0142atno\u015B\u0107 do ${formatDateTime(expires)}.`, c.id);
+      db.holds.unshift({ flexible: !!c.flexibleSchedule, id: uid(), clientId: c.id, trainerId: c.trainerId, dates: cmd.dates, slots: cmd.slots, start: c.flexibleSchedule ? cmd.start : [...cmd.dates].sort((a2, b) => a2.date.localeCompare(b.date))[0].date, expires, service: c.service, intensity: c.intensity, price: quote(db, c.id, c.service, c.intensity).total, basePrice: quote(db, c.id, c.service, c.intensity).base, holidayOverride: !!cmd.holidayOverride, ignoreLimits: !!cmd.ignoreLimits, terms, status: "active", type: a.role === "client" ? "checkout" : "coach" });
+      notify(db, c.flexibleSchedule ? "Pakiet z elastycznymi godzinami czeka na op\u0142acenie" : "Terminy czekaj\u0105 na op\u0142acenie", c.flexibleSchedule ? `Po op\u0142aceniu wybierz pojedyncze terminy w kalendarzu. P\u0142atno\u015B\u0107 do ${formatDateTime(expires)}.` : `Zarezerwowano ${cmd.dates.length} trening\xF3w z ${db.trainers.find((t) => t.id === c.trainerId)?.name}. Pierwszy: ${labelDate(cmd.dates.slice().sort((a2, b) => a2.date.localeCompare(b.date))[0].date)}. P\u0142atno\u015B\u0107 do ${formatDateTime(expires)}.`, c.id);
       break;
     }
     case "editHold": {
       const h = db.holds.find((h2) => h2.id === cmd.id);
       const c = db.clients.find((c2) => c2.id === h.clientId);
       if (!canSee(db, a, c) || h.status !== "active" || h.expires <= db.now) throw Error("Rezerwacja nie jest aktywna.");
+      if (h.flexible) throw Error("W tym pakiecie terminy wybierzesz pojedynczo po op\u0142aceniu.");
       if (cmd.slots) {
         requireStaff(a);
         if (cmd.slots.length !== h.intensity || new Set(cmd.slots.map((s) => s.day + ":" + s.hour)).size !== h.intensity) throw Error("Wybierz wszystkie r\xF3\u017Cne sta\u0142e godziny.");
@@ -523,13 +557,16 @@ function execute(source, a, cmd) {
       if (h.status === "paid") throw Error("Ten pakiet zosta\u0142 ju\u017C op\u0142acony.");
       if (h.status !== "active" || h.expires <= db.now) throw Error("Rezerwacja wygas\u0142a. Wybierz terminy ponownie.");
       for (const d of h.dates) if (!available(db, h.trainerId, d.date, d.hour, h.clientId, void 0, h.id, h.holidayOverride)) throw Error(`Termin ${labelDate(d.date)} o ${hourLabel(d.hour)} jest zaj\u0119ty. Edytuj godziny rezerwacji i pon\xF3w rozliczenie.`);
-      if ([...h.dates].sort((a2, b) => a2.date.localeCompare(b.date))[h.intensity - 1].date > dayAdd(dateOf(new Date(db.now)), rules(db).startDays)) throw Error("Pierwsze treningi wypadaj\u0105 poza dozwolonym terminem rozpocz\u0119cia.");
+      if (!h.flexible && [...h.dates].sort((a2, b) => a2.date.localeCompare(b.date))[h.intensity - 1].date > dayAdd(dateOf(new Date(db.now)), rules(db).startDays)) throw Error("Pierwsze treningi wypadaj\u0105 poza dozwolonym terminem rozpocz\u0119cia.");
       if (!renewalAllowed(db, c.id)) throw Error("Zakup kolejnego pakietu nie jest jeszcze dost\u0119pny.");
       const pricing = h.paymentRequest?.pricing || quote(db, c.id, h.service, h.intensity, cmd.code, h.basePrice);
       h.price = pricing.total;
       const terms = h.terms || defaultRules;
       const id2 = uid();
-      db.packages.push({ id: id2, clientId: h.clientId, count: h.dates.length, start: h.start, cycleEnd: dayAdd(h.start, (h.terms || defaultRules).cycleWeeks * 7), validUntil: dayAdd(h.start, terms.validWeeks * 7), protectionUntil: dayAdd(h.start, terms.validWeeks * 7 + terms.protectionDays), slots: h.slots, service: h.service, intensity: h.intensity, price: h.price, basePrice: pricing.base, discountPercent: pricing.percent, promotionId: pricing.promotionId });
+      const startDeadline = h.flexible ? dayAdd(dateOf(now), terms.startDays) : void 0;
+      if (h.flexible && h.start > startDeadline) throw Error("Pocz\u0105tek pakietu wypada poza terminem pierwszych trening\xF3w.");
+      const anchor = h.flexible ? startDeadline : h.start;
+      db.packages.push({ id: id2, flexible: !!h.flexible, pendingStart: !!h.flexible, startDeadline, clientId: h.clientId, count: holdCount(h), start: h.flexible ? h.start > dateOf(now) ? h.start : dateOf(now) : h.start, cycleEnd: dayAdd(anchor, terms.cycleWeeks * 7), validUntil: dayAdd(anchor, terms.validWeeks * 7), protectionUntil: h.flexible ? dayAdd(anchor, terms.validWeeks * 7) : dayAdd(h.start, terms.validWeeks * 7 + terms.protectionDays), slots: h.slots, service: h.service, intensity: h.intensity, price: h.price, basePrice: pricing.base, discountPercent: pricing.percent, promotionId: pricing.promotionId });
       if (pricing.code) {
         const promo = db.promotions?.find((p) => p.id === pricing.promotionId);
         if (!promo || promo.used >= promo.maxUses) throw Error("Limit u\u017Cy\u0107 kodu zosta\u0142 wyczerpany. Administrator musi wyja\u015Bni\u0107 rozliczenie.");
@@ -537,8 +574,8 @@ function execute(source, a, cmd) {
       }
       for (const d of h.dates) db.sessions.push({ id: uid(), clientId: h.clientId, trainerId: h.trainerId, locationId: db.trainers.find((t) => t.id === h.trainerId)?.locationId || locationsOf(db)[0].id, packageId: id2, date: d.date, hour: d.hour, kind: "training", status: "scheduled", publicNote: "", privateNote: "", comments: [], holidayOverride: !!h.holidayOverride, ignoreLimits: !!h.ignoreLimits, original: d.original });
       h.status = "paid";
-      db.sales.unshift({ id: uid(), packageId: id2, clientId: c.id, label: `${serviceName(h.service, db)} \xB7 ${trainingCount(h.dates.length)}`, amount: h.price, date: db.now, status: "paid" });
-      notify(db, "Tw\xF3j pakiet jest aktywny", `${trainingCount(h.dates.length)}. Pakiet aktywny.`, c.id);
+      db.sales.unshift({ id: uid(), packageId: id2, clientId: c.id, label: `${serviceName(h.service, db)} \xB7 ${trainingCount(holdCount(h))}`, amount: h.price, date: db.now, status: "paid" });
+      notify(db, "Tw\xF3j pakiet jest aktywny", h.flexible ? `${trainingCount(holdCount(h))}. Wybierz pojedyncze terminy w kalendarzu. Pierwsze ${h.intensity} treningi do ${labelDate(startDeadline)}.` : `${trainingCount(holdCount(h))}. Pakiet aktywny.`, c.id);
       audit(db, `Potwierdzenie p\u0142atno\u015Bci za pakiet: ${c.name}`);
       break;
     }
@@ -546,9 +583,18 @@ function execute(source, a, cmd) {
       requireBookingLead(db, "training", cmd.date, cmd.hour, a.role);
       const p = db.packages.find((p2) => p2.id === cmd.packageId);
       const c = db.clients.find((c2) => c2.id === p.clientId);
-      if (!canSee(db, a, c) || p.start < (currentPackage(db, c.id)?.start || p.start) || p.frozen || !unbooked(db, p) || cmd.date >= p.validUntil || cmd.date < p.start) throw Error("Brak wa\u017Cnego wej\u015Bcia na ten termin.");
+      if (!canSee(db, a, c) || p.frozen || !unbooked(db, p) || cmd.date >= p.validUntil || cmd.date < p.start) throw Error("Brak wa\u017Cnego wej\u015Bcia na ten termin.");
+      if (p.flexible && initialQuotaRemaining(db, p) > 0 && cmd.date > p.startDeadline) throw Error(`Pierwsze ${Math.min(p.intensity, p.count)} treningi musz\u0105 odby\u0107 si\u0119 do ${labelDate(p.startDeadline)}. Skontaktuj si\u0119 z administratorem, je\u015Bli termin min\u0105\u0142.`);
       if (!available(db, c.trainerId, cmd.date, cmd.hour, c.id, void 0, void 0, cmd.holidayOverride)) throw Error("Termin jest zaj\u0119ty.");
       if (!cmd.ignoreLimits) limitCheck(db, { ...c, intensity: p.intensity }, cmd.date);
+      if (p.pendingStart) {
+        const delta = Math.round((+at(cmd.date, 12) - +at(p.startDeadline, 12)) / 864e5);
+        p.start = cmd.date;
+        p.cycleEnd = dayAdd(p.cycleEnd, delta);
+        p.validUntil = dayAdd(p.validUntil, delta);
+        p.protectionUntil = p.validUntil;
+        p.pendingStart = false;
+      }
       db.sessions.push({ id: uid(), clientId: c.id, trainerId: c.trainerId, locationId: db.trainers.find((t) => t.id === c.trainerId)?.locationId || locationsOf(db)[0].id, packageId: p.id, holidayOverride: !!cmd.holidayOverride, ignoreLimits: !!cmd.ignoreLimits, date: cmd.date, hour: cmd.hour, kind: "training", status: "scheduled", publicNote: "", privateNote: "", comments: [] });
       notify(db, "Um\xF3wiono trening", `${labelDate(cmd.date)}, ${hourLabel(cmd.hour)}.`, c.id);
       break;
@@ -979,6 +1025,7 @@ function projectState(source, userId) {
     accounts: source.accounts.filter((a) => admin || contacts.has(a.id)).map((a) => ({ ...safeAccount(a, a.id === me.id), ...admin ? { pendingEmail: a.pendingEmail } : {} })),
     clients: source.clients.filter((c) => managed.has(c.id) || historical.has(c.id)).map((c) => managed.has(c.id) ? {
       id: c.id,
+      flexibleSchedule: c.flexibleSchedule,
       archived: c.archived,
       name: c.name,
       email: c.email,
@@ -1118,6 +1165,8 @@ var rules2 = object(Object.fromEntries(Object.keys(defaultRules).map((k) => [k, 
 var prices = object({ "1": number(0.01, 1e6), "2": number(0.01, 1e6), "3": number(0.01, 1e6) });
 var photo = (v) => typeof v === "string" && (v === "" || v.length <= 29e5 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v));
 var fields = {
+  scheduleMode: { clientId: id, flexible: choice(true, false) },
+  startDeadline: { packageId: id, date },
   standardPlan: { clientId: id, intensity: number(1, 3, true) },
   individualPlan: { clientId: id, plan: object({ service, intensity: number(1, 7, true), cycleWeeks: number(1, 52, true), validWeeks: number(1, 104, true), price: optional(number(0.01, 1e6)) }) },
   reviewPlan: { clientId: id, approve: choice(true, false), price: optional(number(0.01, 1e6)) },
@@ -1252,7 +1301,7 @@ function encodeRelational(db, baseline = sourceRows.get(db) || []) {
     for (let day2 = 0; day2 < 7; day2++) for (const hour2 of trainerHours(t, day2)) add("aco_availability", { id: [t.id, day2, hour2].join(":"), trainer_id: t.id, weekday: day2, hour: hour2 });
   }
   for (const c of db.clients) {
-    add("aco_clients", { id: c.id, archived_at: c.archived ? previous("aco_clients", c.id)?.archived_at || db.now : null, lead_trainer_id: c.trainerId, birth_date: c.birthDate || null, status: c.active ? "active" : c.invited ? "approved" : "pending", product: c.prescribed ? c.service : null, intensity: c.prescribed ? c.intensity : null, approved_at: c.invited ? previous("aco_clients", c.id)?.approved_at || db.now : null });
+    add("aco_clients", { id: c.id, flexible_schedule: !!c.flexibleSchedule, archived_at: c.archived ? previous("aco_clients", c.id)?.archived_at || db.now : null, lead_trainer_id: c.trainerId, birth_date: c.birthDate || null, status: c.active ? "active" : c.invited ? "approved" : "pending", product: c.prescribed ? c.service : null, intensity: c.prescribed ? c.intensity : null, approved_at: c.invited ? previous("aco_clients", c.id)?.approved_at || db.now : null });
     for (const [slot, plan] of [["approved", c.individualPlan], ["proposal", c.planProposal]]) if (plan) add("aco_individual_plans", { id: c.id + ":" + slot, client_id: c.id, slot, product: plan.service, intensity: plan.intensity, cycle_weeks: plan.cycleWeeks, validity_weeks: plan.validWeeks, price_grosz: money2(plan.price), status: plan.status, proposed_by: plan.proposedBy, proposed_at: plan.proposedAt, approved_at: plan.approvedAt || null });
     c.answers.forEach((answer, position) => add("aco_client_answers", { id: c.id + ":" + position, client_id: c.id, position, answer }));
   }
@@ -1266,11 +1315,11 @@ function encodeRelational(db, baseline = sourceRows.get(db) || []) {
   add("aco_settings", { id: "company", ...settings });
   for (const p of db.promotions || []) add("aco_promotions", { id: p.id, kind: p.kind, value: p.value, percent: p.percent, max_uses: p.kind === "code" ? p.maxUses : null, used: p.used, expires_on: p.expires || null, active: p.active });
   for (const p of db.packages) {
-    add("aco_packages", { id: p.id, client_id: p.clientId, product: p.service, intensity: p.intensity, count: p.count, starts_on: p.start, cycle_end: p.cycleEnd, valid_until: p.validUntil, protection_until: p.protectionUntil, price_grosz: money2(p.price), base_price_grosz: money2(p.basePrice ?? p.price), discount_percent: p.discountPercent || 0, promotion_id: p.promotionId || null, frozen: !!p.frozen });
+    add("aco_packages", { id: p.id, flexible: !!p.flexible, pending_start: !!p.pendingStart, start_deadline: p.startDeadline || null, client_id: p.clientId, product: p.service, intensity: p.intensity, count: p.count, starts_on: p.start, cycle_end: p.cycleEnd, valid_until: p.validUntil, protection_until: p.protectionUntil, price_grosz: money2(p.price), base_price_grosz: money2(p.basePrice ?? p.price), discount_percent: p.discountPercent || 0, promotion_id: p.promotionId || null, frozen: !!p.frozen });
     for (const s of p.slots) add("aco_package_slots", { id: p.id + ":" + s.day + ":" + s.hour, package_id: p.id, weekday: s.day, hour: s.hour });
   }
   for (const h of db.holds) {
-    add("aco_holds", { id: h.id, base_price_grosz: money2(h.basePrice), holiday_override: !!h.holidayOverride, ignore_limits: !!h.ignoreLimits, client_id: h.clientId, trainer_id: h.trainerId, product_id: h.service, intensity: h.intensity, starts_on: h.start, expires_at: iso(h.expires), price_grosz: money2(h.price), status: h.status, kind: h.type, payment_requested_at: iso(h.paymentRequest?.at) || null, promotion_code: h.paymentRequest?.code ?? null, payment_quote: h.paymentRequest?.pricing ?? null });
+    add("aco_holds", { id: h.id, flexible: !!h.flexible, base_price_grosz: money2(h.basePrice), holiday_override: !!h.holidayOverride, ignore_limits: !!h.ignoreLimits, client_id: h.clientId, trainer_id: h.trainerId, product_id: h.service, intensity: h.intensity, starts_on: h.start, expires_at: iso(h.expires), price_grosz: money2(h.price), status: h.status, kind: h.type, payment_requested_at: iso(h.paymentRequest?.at) || null, promotion_code: h.paymentRequest?.code ?? null, payment_quote: h.paymentRequest?.pricing ?? null });
     for (const d of h.dates) add("aco_hold_dates", { id: [h.id, d.date, d.hour].join(":"), hold_id: h.id, starts_at: starts(d.date, d.hour), original_starts_at: original(d.original) });
     for (const s of h.slots) add("aco_hold_slots", { id: h.id + ":" + s.day + ":" + s.hour, hold_id: h.id, weekday: s.day, hour: s.hour });
     add("aco_hold_terms", { id: h.id, hold_id: h.id, ...ruleData(h.terms || defaultRules) });
@@ -1314,7 +1363,7 @@ function decodeRelational(snapshot) {
   }
   for (const c of get("aco_clients")) {
     const p = profile(c.id);
-    db.clients.push({ id: c.id, archived: !!c.archived_at, name: p.name || "", email: p.email || "", phone: p.phone || "", photo: p.avatar_path || void 0, birthDate: c.birth_date, trainerId: c.lead_trainer_id, active: c.status === "active", invited: ["approved", "active"].includes(c.status), service: c.product || db.trainers.find((t) => t.id === c.lead_trainer_id)?.products?.[0] || "personal", intensity: c.intensity || 2, prescribed: !!c.product, answers: get("aco_client_answers").filter((r) => r.client_id === c.id).sort((a, b) => a.position - b.position).map((r) => r.answer) });
+    db.clients.push({ id: c.id, flexibleSchedule: !!c.flexible_schedule, archived: !!c.archived_at, name: p.name || "", email: p.email || "", phone: p.phone || "", photo: p.avatar_path || void 0, birthDate: c.birth_date, trainerId: c.lead_trainer_id, active: c.status === "active", invited: ["approved", "active"].includes(c.status), service: c.product || db.trainers.find((t) => t.id === c.lead_trainer_id)?.products?.[0] || "personal", intensity: c.intensity || 2, prescribed: !!c.product, answers: get("aco_client_answers").filter((r) => r.client_id === c.id).sort((a, b) => a.position - b.position).map((r) => r.answer) });
   }
   for (const r of get("aco_individual_plans")) {
     const c = db.clients.find((c2) => c2.id === r.client_id);
@@ -1323,8 +1372,8 @@ function decodeRelational(snapshot) {
   for (const p of get("aco_products")) db.productCopies[p.id] = { color: p.color, name: p.name, subtitle: p.subtitle, bullets: p.bullets };
   for (const p of get("aco_product_prices")) db.settings.packagePrices[p.product_id][p.intensity] = p.amount_grosz / 100;
   for (const p of get("aco_promotions")) db.promotions.push({ id: p.id, kind: p.kind, value: p.value, percent: Number(p.percent), maxUses: p.max_uses || 0, used: p.used, expires: p.expires_on || "", active: p.active });
-  for (const p of get("aco_packages")) db.packages.push({ id: p.id, clientId: p.client_id, service: p.product, intensity: p.intensity, count: p.count, start: p.starts_on, cycleEnd: p.cycle_end, validUntil: p.valid_until, protectionUntil: p.protection_until, price: p.price_grosz / 100, basePrice: p.base_price_grosz / 100, discountPercent: Number(p.discount_percent), promotionId: p.promotion_id || void 0, frozen: p.frozen, slots: get("aco_package_slots").filter((s) => s.package_id === p.id).map((s) => ({ day: s.weekday, hour: s.hour })) });
-  for (const h of get("aco_holds")) db.holds.push({ id: h.id, basePrice: h.base_price_grosz == null ? void 0 : h.base_price_grosz / 100, holidayOverride: !!h.holiday_override, ignoreLimits: !!h.ignore_limits, clientId: h.client_id, trainerId: h.trainer_id, service: h.product_id, intensity: h.intensity, start: h.starts_on, expires: iso(h.expires_at), price: h.price_grosz / 100, status: h.status, type: h.kind, terms: readRules(get("aco_hold_terms").find((t) => t.hold_id === h.id) || {}), dates: get("aco_hold_dates").filter((d) => d.hold_id === h.id).map((d) => ({ date: wall(d.starts_at).slice(0, 10), hour: Number(wall(d.starts_at).slice(11, 13)), original: d.original_starts_at ? wall(d.original_starts_at) : void 0 })), slots: get("aco_hold_slots").filter((s) => s.hold_id === h.id).map((s) => ({ day: s.weekday, hour: s.hour })), paymentRequest: h.payment_requested_at ? { at: iso(h.payment_requested_at), code: h.promotion_code || "", pricing: h.payment_quote || void 0 } : void 0 });
+  for (const p of get("aco_packages")) db.packages.push({ id: p.id, flexible: !!p.flexible, pendingStart: !!p.pending_start, startDeadline: p.start_deadline || void 0, clientId: p.client_id, service: p.product, intensity: p.intensity, count: p.count, start: p.starts_on, cycleEnd: p.cycle_end, validUntil: p.valid_until, protectionUntil: p.protection_until, price: p.price_grosz / 100, basePrice: p.base_price_grosz / 100, discountPercent: Number(p.discount_percent), promotionId: p.promotion_id || void 0, frozen: p.frozen, slots: get("aco_package_slots").filter((s) => s.package_id === p.id).map((s) => ({ day: s.weekday, hour: s.hour })) });
+  for (const h of get("aco_holds")) db.holds.push({ id: h.id, flexible: !!h.flexible, basePrice: h.base_price_grosz == null ? void 0 : h.base_price_grosz / 100, holidayOverride: !!h.holiday_override, ignoreLimits: !!h.ignore_limits, clientId: h.client_id, trainerId: h.trainer_id, service: h.product_id, intensity: h.intensity, start: h.starts_on, expires: iso(h.expires_at), price: h.price_grosz / 100, status: h.status, type: h.kind, terms: readRules(get("aco_hold_terms").find((t) => t.hold_id === h.id) || {}), dates: get("aco_hold_dates").filter((d) => d.hold_id === h.id).map((d) => ({ date: wall(d.starts_at).slice(0, 10), hour: Number(wall(d.starts_at).slice(11, 13)), original: d.original_starts_at ? wall(d.original_starts_at) : void 0 })), slots: get("aco_hold_slots").filter((s) => s.hold_id === h.id).map((s) => ({ day: s.weekday, hour: s.hour })), paymentRequest: h.payment_requested_at ? { at: iso(h.payment_requested_at), code: h.promotion_code || "", pricing: h.payment_quote || void 0 } : void 0 });
   for (const s of get("aco_substitutions")) if (!s.revoked_at) db.substitutions.push({ id: s.id, clientId: s.client_id, trainerId: s.trainer_id, until: iso(s.expires_at) });
   for (const s of get("aco_sessions")) {
     const earning = get("aco_earnings").find((e) => e.session_id === s.id);
@@ -1388,7 +1437,7 @@ function relationalCommitArgs(before, after, actorId, action) {
   }
   for (const db of [before, after]) for (const c of db.clients) if (clients.has(c.id) && c.trainerId) trainers.add(c.trainerId);
   const actor = before.accounts.find((a) => a.id === actorId), profile = actor?.clientId || actor?.trainerId || actorId;
-  const calendar = ["adminClient", "individualPlan", "reviewPlan", "standardPlan", "register", "hold", "editHold", "payHold", "makeup", "reschedule", "outcome", "substitute", "transferClient", "block", "unblock", "freeze", "validity", "extend", "availability"].includes(action);
+  const calendar = ["startDeadline", "adminClient", "individualPlan", "reviewPlan", "standardPlan", "register", "hold", "editHold", "payHold", "makeup", "reschedule", "outcome", "substitute", "transferClient", "block", "unblock", "freeze", "validity", "extend", "availability"].includes(action);
   const dependencies = baseline.filter((r) => r.table === "aco_accounts" && r.key === actorId || r.table === "aco_profiles" && r.key === profile || r.table === "aco_clients" && clients.has(r.key) || r.table === "aco_trainers" && trainers.has(r.key) || calendar && ["aco_settings", "aco_product_prices", "aco_promotions"].includes(r.table)).map(({ table, key, version }) => ({ table, key, version }));
   return { p_clock_version: before.clockVersion || 0, p_changes: delta.changes, p_removed: delta.removed, p_dependencies: dependencies, p_clients: [...clients].sort(), p_trainers: [...trainers].sort(), p_role: actor?.role || "registration", p_action: action };
 }
