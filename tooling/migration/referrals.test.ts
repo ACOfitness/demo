@@ -22,6 +22,7 @@ const order=(await pg.query<{tables:string[]}>('select aco_private.relational_ta
 for(const row of encodeRelational(source).sort((a,b)=>order.indexOf(a.table)-order.indexOf(b.table)))await pg.query('select aco_private.write_relational_row($1,$2,$3)',[row.table,row.key,row.data]);
 await pg.exec('set role service_role');
 let createdClient=6000;
+let simulatedConflicts=0,commitAttempts=0;
 const fetcher:typeof fetch=async(input,init)=>{
  const url=new URL(String(input));
  if(url.pathname==='/auth/v1/admin/users'&&init?.method==='POST'){const n=id(createdClient++);await pg.exec('reset role');await pg.query('insert into auth.users(id,email,raw_app_meta_data) values($1,$2,$3)',[n,JSON.parse(String(init.body)).email,JSON.stringify(JSON.parse(String(init.body)).app_metadata)]);await pg.exec('set role service_role');return Response.json({id:n});}
@@ -30,6 +31,7 @@ const fetcher:typeof fetch=async(input,init)=>{
   return Response.json({id:JSON.parse(Buffer.from(token.split('.')[1],'base64url').toString()).sub});
  }
  const name=url.pathname.split('/').at(-1)!;
+ if(name==='aco_relational_commit'){commitAttempts++;if(simulatedConflicts>0){simulatedConflicts--;return Response.json({code:'PT409',message:'Row changed; reload and retry'},{status:409})}}
  assert.ok(['aco_registration_identity','aco_relational_load','aco_relational_commit','aco_rate_limit'].includes(name));
  const values=JSON.parse(String(init?.body)),keys=Object.keys(values);
  assert.ok(keys.every(k=>/^p_[a-z_]+$/.test(k)));
@@ -63,7 +65,7 @@ test('trainer outcome awards both wallets, no ledger leaks, stale spend rejected
  const load=()=>pg.query<any>('select aco_relational_load($1,$2,null) v',[id(4),id(104)]).then(r=>decodeRelational(r.rows[0].v));
  const a=await load(),b=await load();const ac=applyCommand(a,id(4),{type:'referralSettings',program:{enabled:true,referrerAmount:300,newClientAmount:100,monthlyLimit:5,validDays:180}},a.now),bc=applyCommand(b,id(4),{type:'referralSettings',program:{enabled:true,referrerAmount:400,newClientAmount:100,monthlyLimit:5,validDays:180}},b.now);
  async function commit(before:any,after:any,key:number){const d=relationalCommitArgs(before,after,id(4),'referralSettings'),args={p_actor:id(4),p_session:id(104),p_request:id(key),p_hash:'a'.repeat(64),...d},keys=Object.keys(args);return pg.query(`select aco_relational_commit(${keys.map((k,i)=>k+' => $'+(i+1)).join(',')})`,Object.entries(args).map(([k,v])=>['p_clients','p_trainers'].includes(k)?v:v&&typeof v==='object'?JSON.stringify(v):v))}
- await commit(a,ac,11004);await assert.rejects(commit(b,bc,11005),/Row changed/);
+ await commit(a,ac,11004);await assert.rejects(commit(b,bc,11005),(e:any)=>e.code==='PT409'&&e.message.includes('Row changed'));
 });
 test('wallet reduces discounted checkout and is spent only after confirmation',async()=>{
  await command(4,{type:'settings',...source.settings,consultation:0,personal:0,physio:0,packagePrices:{personal:{1:150,2:150,3:150},physio:{1:150,2:150,3:150}}},12000);
@@ -73,3 +75,15 @@ test('wallet reduces discounted checkout and is spent only after confirmation',a
  const confirmed=await command(4,{type:'payHold',id:h.id},12004);assert.equal(confirmed.db.packages.find((p:any)=>p.clientId===id(2)&&p.flexible).price,50);assert.equal(confirmed.db.walletCredits.find((c:any)=>c.clientId===id(2)).spent,10000);await command(4,{type:'payHold',id:h.id},12004);assert.equal((await pg.query<any>('select spent from aco_wallet_credits where client_id=$1',[id(2)])).rows[0].spent,10000);
 });
 test('RLS and SQL grants keep every referral table inaccessible to browser roles',async()=>{for(const role of ['anon','authenticated']){await pg.exec('set role '+role);for(const table of ['aco_referral_program','aco_referral_codes','aco_referrals','aco_wallet_credits'])await assert.rejects(pg.query('select * from '+table),/permission denied/)}await pg.exec('set role service_role')});
+
+test('business conflicts return PT409 and backend retries are bounded to three attempts',async()=>{
+ await pg.exec('set role service_role');
+ simulatedConflicts=2;commitAttempts=0;
+ await command(4,{type:'scheduleMode',clientId:id(1),flexible:true},13000);assert.equal(commitAttempts,3);
+ simulatedConflicts=10;commitAttempts=0;
+ const response=await handle(request(4,{action:'command',requestId:id(13001),command:{type:'scheduleMode',clientId:id(1),flexible:true}}));
+ assert.equal(response.status,409);assert.equal(commitAttempts,3);assert.equal((await response.json()).db,undefined);simulatedConflicts=0;
+ await pg.exec('reset role');
+ const bad=await pg.query("select proname from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname in ('public','aco_private') and prosrc like '%40001%'");assert.equal(bad.rows.length,0);
+ await pg.exec('set role service_role');
+});
