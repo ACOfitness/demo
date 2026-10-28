@@ -19,7 +19,7 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
   const result=await fetcher(config.url+'/rest/v1/rpc/'+name,{method:'POST',headers:{apikey:config.serviceKey,Authorization:'Bearer '+config.serviceKey,'Content-Type':'application/json'},body:JSON.stringify(args)});
   const raw=await result.text();
   const data=raw?JSON.parse(raw):null;
-  if(!result.ok){const messages:Record<string,string>={'Retry with the same password':'Ponów aktywację z tym samym hasłem co przy pierwszej próbie.','Email already used':'Ten e-mail jest już używany.','Email reserved':'Ten e-mail jest przypisany do trwającej zmiany loginu.','Email change pending':'Trwa zmiana loginu. Dokończ ją, zapisując ten sam nowy adres.','Recurring time is protected for another client':'Ta stała godzina jest przypisana innemu klientowi. Wybierz inną.','Test tools disabled':'Tryb testowy jest wyłączony.','Offset exceeds ten years':'Czas testowy można przesunąć maksymalnie o 10 lat.','Trainer still has clients or unsettled appointments':'Najpierw przenieś klientów i rozlicz wizyty trenera.','Existing client history must be preserved':'Ten trener ma historię istniejących klientów. Wybierz zachowanie historii.','Clock changed; reload':'Czas systemu się zmienił. Spróbuj ponownie.'};throw new ApiError(data?.code==='40001'?409:403,messages[data?.message]||'Nie udało się zapisać operacji.',data?.code);}
+  if(!result.ok){const messages:Record<string,string>={'Retry with the same password':'Ponów aktywację z tym samym hasłem co przy pierwszej próbie.','Email already used':'Ten e-mail jest już używany.','Email reserved':'Ten e-mail jest przypisany do trwającej zmiany loginu.','Email change pending':'Trwa zmiana loginu. Dokończ ją, zapisując ten sam nowy adres.','Recurring time is protected for another client':'Ta stała godzina jest przypisana innemu klientowi. Wybierz inną.','Test tools disabled':'Tryb testowy jest wyłączony.','Offset exceeds ten years':'Czas testowy można przesunąć maksymalnie o 10 lat.','Trainer still has clients or unsettled appointments':'Najpierw przenieś klientów i rozlicz wizyty trenera.','Existing client history must be preserved':'Ten trener ma historię istniejących klientów. Wybierz zachowanie historii.','Row changed; reload and retry':'Dane zostały zmienione. Odśwież widok i spróbuj ponownie.','Clock changed; reload':'Czas systemu się zmienił. Spróbuj ponownie.'};throw new ApiError(['40001','PT409'].includes(data?.code)?409:403,messages[data?.message]||'Nie udało się zapisać operacji.',data?.code);}
   return data as T;
  }
  async function auth(path:string,method:string,body?:unknown,token?:string){
@@ -84,7 +84,7 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
      const synced=structuredClone(db),account=synced.accounts.find(a=>a.id===me.id)!;account.email=identity.email;
      const client=synced.clients.find(c=>c.id===me.clientId);if(client)client.email=identity.email;
      const delta=relationalCommitArgs(db,synced,me.id,'emailVerified');
-     try{await rpc('aco_relational_commit',{...args,...delta,p_request:crypto.randomUUID(),p_hash:await hash('verified-email:'+identity.email)})}catch(error){if(!(error instanceof ApiError&&error.code==='40001'))throw error}
+     try{await rpc('aco_relational_commit',{...args,...delta,p_request:crypto.randomUUID(),p_hash:await hash('verified-email:'+identity.email)})}catch(error){if(!(error instanceof ApiError&&['40001','PT409'].includes(error.code||'')))throw error}
      continue;
     }
     if(me.role!==snapshot.role)throw new ApiError(403,'Nieprawidłowe uprawnienia konta.');
@@ -191,7 +191,7 @@ export function createHandler(config:Config,fetcher:typeof fetch=fetch){
     try{
      const result=await rpc<{revision:number}>('aco_relational_commit',{...args,...delta,p_hash:requestHash});
      return reply({accountId:me.id,revision:result.revision,db:projectState(next,me.id),...extra});
-    }catch(error){if(error instanceof ApiError&&error.code==='40001'&&attempt<2)continue;throw error}
+    }catch(error){if(error instanceof ApiError&&['40001','PT409'].includes(error.code||'')&&attempt<2)continue;throw error}
    }
    throw new ApiError(409,'Grafik został zmieniony. Odśwież go i spróbuj ponownie.');
   }catch(error){return reply({error:error instanceof ApiError?error.message:'Nie udało się obsłużyć żądania.'},error instanceof ApiError?error.status:500)}

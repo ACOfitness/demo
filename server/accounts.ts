@@ -80,7 +80,7 @@ export async function publicAction(body:any,req:Request,services:AccountServices
    try{
     await rpc('aco_relational_commit',{p_actor:userId,p_session:null,p_request:body.requestId,p_hash:await hash(JSON.stringify(command)),...delta});
     committed=true;return {ok:true};
-   }catch(error){if((error as {code?:string}).code==='40001'&&attempt<2)continue;throw error}
+   }catch(error){if(['40001','PT409'].includes((error as {code?:string}).code||'')&&attempt<2)continue;throw error}
   }
  }finally{
   // Do not delete on an uncertain network result: it may already be committed.
