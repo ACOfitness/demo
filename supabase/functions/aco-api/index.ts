@@ -1655,7 +1655,7 @@ async function publicAction(body, req, services) {
         committed = true;
         return { ok: true };
       } catch (error) {
-        if (error.code === "40001" && attempt < 2) continue;
+        if (["40001", "PT409"].includes(error.code || "") && attempt < 2) continue;
         throw error;
       }
     }
@@ -1700,8 +1700,8 @@ function createHandler(config, fetcher = fetch) {
     const raw = await result.text();
     const data = raw ? JSON.parse(raw) : null;
     if (!result.ok) {
-      const messages = { "Retry with the same password": "Pon\xF3w aktywacj\u0119 z tym samym has\u0142em co przy pierwszej pr\xF3bie.", "Email already used": "Ten e-mail jest ju\u017C u\u017Cywany.", "Email reserved": "Ten e-mail jest przypisany do trwaj\u0105cej zmiany loginu.", "Email change pending": "Trwa zmiana loginu. Doko\u0144cz j\u0105, zapisuj\u0105c ten sam nowy adres.", "Recurring time is protected for another client": "Ta sta\u0142a godzina jest przypisana innemu klientowi. Wybierz inn\u0105.", "Test tools disabled": "Tryb testowy jest wy\u0142\u0105czony.", "Offset exceeds ten years": "Czas testowy mo\u017Cna przesun\u0105\u0107 maksymalnie o 10 lat.", "Trainer still has clients or unsettled appointments": "Najpierw przenie\u015B klient\xF3w i rozlicz wizyty trenera.", "Existing client history must be preserved": "Ten trener ma histori\u0119 istniej\u0105cych klient\xF3w. Wybierz zachowanie historii.", "Clock changed; reload": "Czas systemu si\u0119 zmieni\u0142. Spr\xF3buj ponownie." };
-      throw new ApiError(data?.code === "40001" ? 409 : 403, messages[data?.message] || "Nie uda\u0142o si\u0119 zapisa\u0107 operacji.", data?.code);
+      const messages = { "Retry with the same password": "Pon\xF3w aktywacj\u0119 z tym samym has\u0142em co przy pierwszej pr\xF3bie.", "Email already used": "Ten e-mail jest ju\u017C u\u017Cywany.", "Email reserved": "Ten e-mail jest przypisany do trwaj\u0105cej zmiany loginu.", "Email change pending": "Trwa zmiana loginu. Doko\u0144cz j\u0105, zapisuj\u0105c ten sam nowy adres.", "Recurring time is protected for another client": "Ta sta\u0142a godzina jest przypisana innemu klientowi. Wybierz inn\u0105.", "Test tools disabled": "Tryb testowy jest wy\u0142\u0105czony.", "Offset exceeds ten years": "Czas testowy mo\u017Cna przesun\u0105\u0107 maksymalnie o 10 lat.", "Trainer still has clients or unsettled appointments": "Najpierw przenie\u015B klient\xF3w i rozlicz wizyty trenera.", "Existing client history must be preserved": "Ten trener ma histori\u0119 istniej\u0105cych klient\xF3w. Wybierz zachowanie historii.", "Row changed; reload and retry": "Dane zosta\u0142y zmienione. Od\u015Bwie\u017C widok i spr\xF3buj ponownie.", "Clock changed; reload": "Czas systemu si\u0119 zmieni\u0142. Spr\xF3buj ponownie." };
+      throw new ApiError(["40001", "PT409"].includes(data?.code) ? 409 : 403, messages[data?.message] || "Nie uda\u0142o si\u0119 zapisa\u0107 operacji.", data?.code);
     }
     return data;
   }
@@ -1819,7 +1819,7 @@ function createHandler(config, fetcher = fetch) {
           try {
             await rpc("aco_relational_commit", { ...args, ...delta2, p_request: crypto.randomUUID(), p_hash: await hash("verified-email:" + identity.email) });
           } catch (error) {
-            if (!(error instanceof ApiError && error.code === "40001")) throw error;
+            if (!(error instanceof ApiError && ["40001", "PT409"].includes(error.code || ""))) throw error;
           }
           continue;
         }
@@ -1962,7 +1962,7 @@ function createHandler(config, fetcher = fetch) {
           const result = await rpc("aco_relational_commit", { ...args, ...delta, p_hash: requestHash });
           return reply({ accountId: me.id, revision: result.revision, db: projectState(next, me.id), ...extra });
         } catch (error) {
-          if (error instanceof ApiError && error.code === "40001" && attempt < 2) continue;
+          if (error instanceof ApiError && ["40001", "PT409"].includes(error.code || "") && attempt < 2) continue;
           throw error;
         }
       }
