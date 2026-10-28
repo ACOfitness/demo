@@ -69,7 +69,7 @@ test('correction persists, reopening removes one earning and repeat cannot doubl
  const blocked=await handle(request(1,{action:'command',requestId:id(9103),command:{type:'outcome',id:sid,status:'scheduled'}}));assert.notEqual(blocked.status,200);
 });
 test('admin client creation is authenticated, atomic, replay-safe and initially inactive',async()=>{
- const input={mode:'skip',name:'Manual Client',email:'manual@example.test',phone:'500600700',birthDate:'1990-01-01',trainerId:id(3),answers:[],service:'personal',intensity:2};
+ const input={mode:'skip',date:'2026-10-28',hour:-1,name:'Manual Client',email:'manual@example.test',phone:'500600700',birthDate:'1990-01-01',trainerId:id(3),answers:[],service:'personal',intensity:2};
  const body={action:'adminClient',requestId:id(9200),input};
  for(const actor of [1,3])assert.notEqual((await handle(request(actor,body))).status,200);
  assert.equal(createdClient,6000);
