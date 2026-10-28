@@ -12,7 +12,13 @@ export function prepareAdminClient(source:Database,input:AdminClientInput){
  }else if(!input.service||!trainer.products?.includes(input.service)||![1,2,3].includes(input.intensity||0))throw Error('Wybierz produkt trenera i częstotliwość treningów.');
  const db=execute(source,{role:'admin',trainerId:'',clientId:''},{type:'manualClient',name:input.name,email,phone:input.phone,trainerId:trainer.id}) as Database;
  const client=db.clients.at(-1)!;client.birthDate=input.birthDate;client.answers=input.answers;
- if(input.mode==='consultation')db.sessions.push({id:uid(),clientId:client.id,trainerId:trainer.id,locationId:trainer.locationId||defaultLocation.id,date:input.date!,hour:input.hour!,kind:'consultation',status:'scheduled',consultationPrice:db.settings.consultation,publicNote:'',privateNote:'',comments:[]});
+ if(input.mode==='consultation'){db.sessions.push({id:uid(),clientId:client.id,trainerId:trainer.id,locationId:trainer.locationId||defaultLocation.id,date:input.date!,hour:input.hour!,kind:'consultation',status:'scheduled',consultationPrice:db.settings.consultation,publicNote:'',privateNote:'',comments:[]});if(db.settings.consultation===0)db.sales.push({id:uid(),sessionId:db.sessions.at(-1)!.id,clientId:client.id,label:'Konsultacja bezpłatna',amount:0,date:db.now,status:'paid'});}
  else {client.service=input.service!;client.intensity=input.intensity!;client.prescribed=true;client.invited=true;db.audit.unshift({id:uid(),at:db.now,text:'Administrator pominął konsultację i zatwierdził aktywację: '+client.name});}
  return {db,client};
+}
+
+/** Ignore controls from the inactive wizard branch before transport and validation. */
+export function adminClientPayload(input:AdminClientInput):AdminClientInput {
+ const {date,hour,service,intensity,...common}=input;
+ return input.mode==='skip'?{...common,service,intensity}:{...common,date,hour};
 }
