@@ -255,7 +255,7 @@ function execute(source, a, cmd) {
       if (a.role === "trainer" && p.price !== void 0) throw Error("Cen\u0119 pakietu ustala wy\u0142\u0105cznie administrator.");
       if (!db.trainers.find((t) => t.id === c.trainerId)?.products?.includes(p.service)) throw Error("Trener nie prowadzi tego produktu.");
       if (c.prescribed && p.service !== c.service) throw Error("Plan indywidualny musi pozosta\u0107 w przypisanym produkcie.");
-      if (!Number.isInteger(p.intensity) || p.intensity < 1 || p.intensity > 7 || !Number.isInteger(p.cycleWeeks) || p.cycleWeeks < 1 || p.cycleWeeks > 52 || !Number.isInteger(p.validWeeks) || p.validWeeks < p.cycleWeeks || p.validWeeks > 104 || a.role === "admin" && (!Number.isFinite(p.price) || !p.price || p.price <= 0)) throw Error("Sprawd\u017A cz\u0119stotliwo\u015B\u0107 (1-7), cykl (1-52 tygodnie), wa\u017Cno\u015B\u0107 i cen\u0119.");
+      if (!Number.isInteger(p.intensity) || p.intensity < 1 || p.intensity > 7 || !Number.isInteger(p.cycleWeeks) || p.cycleWeeks < 1 || p.cycleWeeks > 52 || !Number.isInteger(p.validWeeks) || p.validWeeks < p.cycleWeeks || p.validWeeks > 104 || a.role === "admin" && (!Number.isFinite(p.price) || p.price === void 0 || p.price < 0)) throw Error("Sprawd\u017A cz\u0119stotliwo\u015B\u0107 (1-7), cykl (1-52 tygodnie), wa\u017Cno\u015B\u0107 i cen\u0119.");
       const proposal = { ...p, price: a.role === "admin" ? p.price : 0, status: a.role === "admin" ? "approved" : "pending", proposedBy: a.trainerId || "admin", proposedAt: db.now, ...a.role === "admin" ? { approvedAt: db.now } : {} };
       if (a.role === "admin") {
         invalidatePendingPlan(db, c.id);
@@ -271,7 +271,7 @@ function execute(source, a, cmd) {
       const c = db.clients.find((c2) => c2.id === cmd.clientId);
       if (!c?.planProposal || c.planProposal.status !== "pending") throw Error("Nie ma propozycji do zatwierdzenia.");
       if (cmd.approve) {
-        if (!Number.isFinite(cmd.price) || !cmd.price || cmd.price <= 0) throw Error("Ustal dodatni\u0105 cen\u0119 pakietu przed zatwierdzeniem.");
+        if (!Number.isFinite(cmd.price) || cmd.price === void 0 || cmd.price < 0) throw Error("Ustal cen\u0119 pakietu (0 z\u0142 lub wi\u0119cej) przed zatwierdzeniem.");
         invalidatePendingPlan(db, c.id);
         c.individualPlan = { ...c.planProposal, price: cmd.price, status: "approved", approvedAt: db.now };
         delete c.planProposal;
@@ -703,11 +703,11 @@ function execute(source, a, cmd) {
     }
     case "settings": {
       requireAdmin(a);
-      if ([cmd.personal, cmd.physio, cmd.consultation, cmd.cancelHours].some((n) => !Number.isFinite(n) || n <= 0)) throw Error("Warto\u015Bci musz\u0105 by\u0107 wi\u0119ksze od zera.");
+      if ([cmd.personal, cmd.physio, cmd.consultation].some((n) => !Number.isFinite(n) || n < 0) || !Number.isFinite(cmd.cancelHours) || cmd.cancelHours <= 0) throw Error("Ceny nie mog\u0105 by\u0107 ujemne, a czas odwo\u0142ania musi by\u0107 dodatni.");
       const r = cmd.rules || rules(db);
       if (Object.entries(r).some(([key, n]) => !Number.isInteger(n) || n < (key.endsWith("LeadHours") ? 0 : 1) || key.endsWith("LeadHours") && n > 8760) || r.validWeeks < r.cycleWeeks) throw Error("Parametry musz\u0105 by\u0107 dodatnimi liczbami ca\u0142kowitymi; wa\u017Cno\u015B\u0107 nie mo\u017Ce by\u0107 kr\xF3tsza ni\u017C cykl.");
       const prices2 = cmd.packagePrices || db.settings.packagePrices;
-      if (prices2 && ["personal", "physio"].some((s) => [1, 2, 3].some((i) => !Number.isFinite(prices2[s]?.[i]) || prices2[s][i] <= 0))) throw Error("Uzupe\u0142nij wszystkie ceny pakiet\xF3w.");
+      if (prices2 && ["personal", "physio"].some((s) => [1, 2, 3].some((i) => !Number.isFinite(prices2[s]?.[i]) || prices2[s][i] < 0))) throw Error("Uzupe\u0142nij wszystkie ceny pakiet\xF3w.");
       db.settings = { ...db.settings, personal: cmd.personal, physio: cmd.physio, consultation: cmd.consultation, cancelHours: cmd.cancelHours, rules: r, packagePrices: prices2 };
       audit(db, "Zmieniono cennik i zasady dla nowych operacji");
       break;
@@ -824,8 +824,10 @@ function prepareAdminClient(source, input) {
   const client = db.clients.at(-1);
   client.birthDate = input.birthDate;
   client.answers = input.answers;
-  if (input.mode === "consultation") db.sessions.push({ id: uid(), clientId: client.id, trainerId: trainer.id, locationId: trainer.locationId || defaultLocation.id, date: input.date, hour: input.hour, kind: "consultation", status: "scheduled", consultationPrice: db.settings.consultation, publicNote: "", privateNote: "", comments: [] });
-  else {
+  if (input.mode === "consultation") {
+    db.sessions.push({ id: uid(), clientId: client.id, trainerId: trainer.id, locationId: trainer.locationId || defaultLocation.id, date: input.date, hour: input.hour, kind: "consultation", status: "scheduled", consultationPrice: db.settings.consultation, publicNote: "", privateNote: "", comments: [] });
+    if (db.settings.consultation === 0) db.sales.push({ id: uid(), sessionId: db.sessions.at(-1).id, clientId: client.id, label: "Konsultacja bezp\u0142atna", amount: 0, date: db.now, status: "paid" });
+  } else {
     client.service = input.service;
     client.intensity = input.intensity;
     client.prescribed = true;
@@ -833,6 +835,86 @@ function prepareAdminClient(source, input) {
     db.audit.unshift({ id: uid(), at: db.now, text: "Administrator pomin\u0105\u0142 konsultacj\u0119 i zatwierdzi\u0142 aktywacj\u0119: " + client.name });
   }
   return { db, client };
+}
+
+// src/referrals.ts
+var defaultReferralProgram = { enabled: false, referrerAmount: 200, newClientAmount: 200, monthlyLimit: 5, validDays: 180, revision: 0 };
+var referralProgram = (db) => ({ ...defaultReferralProgram, ...db.referralProgram });
+function touchReferrals(db) {
+  db.referralProgram = { ...referralProgram(db), revision: referralProgram(db).revision + 1 };
+}
+function creditAvailable(db, c, ignoreHold) {
+  return c.expires <= db.now ? 0 : Math.max(0, c.amount - c.spent - db.holds.filter((h) => h.id !== ignoreHold && h.status === "active" && h.expires > db.now).flatMap((h) => h.walletAllocations || []).filter((a) => a.id === c.id).reduce((n, a) => n + a.amount, 0));
+}
+function ensureReferralCode(db, clientId) {
+  if (!db.clients.some((c) => c.id === clientId && c.active && !c.archived)) throw Error("Poleca\u0107 mo\u017Ce aktywny klient.");
+  const old = db.referralCodes?.find((c) => c.clientId === clientId);
+  if (old) return old;
+  const code = { id: uid(), clientId, code: "ACO" + uid().replaceAll("-", "").slice(0, 16).toUpperCase() };
+  (db.referralCodes ??= []).push(code);
+  touchReferrals(db);
+  return code;
+}
+function attachReferral(db, clientId, code) {
+  if (!code.trim()) return;
+  const cfg = referralProgram(db);
+  if (!cfg.enabled) throw Error("Program polece\u0144 jest obecnie wy\u0142\u0105czony.");
+  const owner = db.referralCodes?.find((c) => c.code === code.trim().toUpperCase());
+  if (!owner || owner.clientId === clientId) throw Error("Sprawd\u017A kod polecenia.");
+  if (db.referrals?.some((r) => r.clientId === clientId) || db.packages.some((p) => p.clientId === clientId)) throw Error("Polecenie mo\u017Cna przypisa\u0107 tylko raz, przed zakupem pierwszego pakietu.");
+  (db.referrals ??= []).push({ id: uid(), clientId, referrerId: owner.clientId, at: db.now, referrerAmount: Math.round(cfg.referrerAmount * 100), newClientAmount: Math.round(cfg.newClientAmount * 100), validDays: cfg.validDays, status: "pending" });
+  touchReferrals(db);
+}
+function awardReferrals(db, clientId) {
+  const r = db.referrals?.find((r2) => r2.clientId === clientId && r2.status === "pending");
+  if (!r) return;
+  const first = db.sales.filter((s) => s.clientId === clientId && s.packageId && s.status === "paid" && s.amount > 0).sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id))[0];
+  const p = db.packages.find((p2) => p2.id === first?.packageId);
+  if (!p || db.sessions.filter((s) => s.packageId === p.id && spends(s)).length < p.count) return;
+  const month = dateOf(new Date(db.now)).slice(0, 7), used = (db.referrals || []).filter((x) => x.referrerId === r.referrerId && x.status === "rewarded" && x.resolvedAt && dateOf(new Date(x.resolvedAt)).slice(0, 7) === month).length;
+  r.resolvedAt = db.now;
+  r.packageId = p.id;
+  r.status = used >= referralProgram(db).monthlyLimit ? "over_limit" : "rewarded";
+  if (r.status === "rewarded") {
+    for (const [id2, amount] of [[r.referrerId, r.referrerAmount], [r.clientId, r.newClientAmount]]) if (id2 && amount > 0) (db.walletCredits ??= []).push({ id: uid(), clientId: id2, referralId: r.id, amount, spent: 0, at: db.now, expires: new Date(Date.parse(db.now) + r.validDays * 864e5).toISOString() });
+  }
+  touchReferrals(db);
+}
+function reserveWallet(db, h, total, use) {
+  h.walletAllocations = [];
+  let left = use ? Math.round(total * 100) : 0;
+  for (const c of (db.walletCredits || []).filter((c2) => c2.clientId === h.clientId).sort((a, b) => a.expires.localeCompare(b.expires) || a.id.localeCompare(b.id))) {
+    const amount = Math.min(left, creditAvailable(db, c, h.id));
+    if (amount > 0) {
+      h.walletAllocations.push({ id: c.id, amount });
+      left -= amount;
+    }
+  }
+  if (h.walletAllocations.length) touchReferrals(db);
+  return h.walletAllocations.reduce((n, a) => n + a.amount, 0) / 100;
+}
+function spendWallet(db, h) {
+  for (const a of h.walletAllocations || []) {
+    const c = db.walletCredits?.find((c2) => c2.id === a.id && c2.clientId === h.clientId);
+    if (!c || c.spent + a.amount > c.amount) throw Error("Saldo skarbonki zmieni\u0142o si\u0119. Od\u015Bwie\u017C rozliczenie.");
+    c.spent += a.amount;
+  }
+  if (h.walletAllocations?.length) touchReferrals(db);
+}
+function referralCommand(db, a, cmd) {
+  if (cmd.type === "referralCode") {
+    if (a.role !== "client") throw Error("Kod jest dost\u0119pny na koncie klienta.");
+    ensureReferralCode(db, a.clientId);
+    return db;
+  }
+  if (a.role !== "admin") throw Error("Tylko administrator mo\u017Ce zmieni\u0107 program polece\u0144.");
+  if (cmd.type === "attachReferral") attachReferral(db, cmd.clientId, cmd.code);
+  else {
+    const p = cmd.program;
+    if (typeof p.enabled !== "boolean" || ![p.referrerAmount, p.newClientAmount].every((n) => Number.isFinite(n) && n >= 0 && n <= 1e5) || !Number.isInteger(p.monthlyLimit) || p.monthlyLimit < 1 || p.monthlyLimit > 1e3 || !Number.isInteger(p.validDays) || p.validDays < 1 || p.validDays > 3650) throw Error("Sprawd\u017A kwoty, limit i wa\u017Cno\u015B\u0107 nagr\xF3d.");
+    db.referralProgram = { ...p, revision: referralProgram(db).revision + 1 };
+  }
+  return db;
 }
 
 // src/management.ts
@@ -1016,6 +1098,10 @@ function projectState(source, userId) {
   }
   const visibleNotices = new Set(notifications(source, actor).map((n) => n.id));
   const out = {
+    referralProgram: structuredClone(source.referralProgram),
+    referralCodes: source.referralCodes?.filter((c) => admin || c.clientId === me.clientId),
+    referrals: admin ? structuredClone(source.referrals) : [],
+    walletCredits: source.walletCredits?.filter((c) => admin || c.clientId === me.clientId).map((c) => ({ ...c, referralId: admin ? c.referralId : "" })),
     recurringBusy: [...source.recurringBusy || [], ...source.packages.filter((p) => !managed.has(p.clientId) && !p.frozen && p.protectionUntil > dateOf(new Date(source.now))).flatMap((p) => p.slots.map((s) => ({ ...s, trainerId: source.clients.find((c) => c.id === p.clientId)?.trainerId || "" }))), ...source.holds.filter((h) => !managed.has(h.clientId) && h.status === "active" && h.expires > source.now).flatMap((h) => h.slots.map((s) => ({ ...s, trainerId: h.trainerId })))],
     version: 1,
     now: source.now,
@@ -1162,21 +1248,24 @@ var service = choice("personal", "physio");
 var date = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && v >= "1900-01-01" && v <= "2200-12-31" && Number.isFinite(Date.parse(v + "T12:00:00Z")) && (/* @__PURE__ */ new Date(v + "T12:00:00Z")).toISOString().slice(0, 10) === v;
 var dates = array(object({ date, hour, original: optional(text(100)) }), 364);
 var rules2 = object(Object.fromEntries(Object.keys(defaultRules).map((k) => [k, k.endsWith("LeadHours") ? optional(number(0, 8760, true)) : k === "paymentReviewHours" ? optional(number(1, 366, true)) : number(1, k.endsWith("Weeks") ? 52 : 366, true)])));
-var prices = object({ "1": number(0.01, 1e6), "2": number(0.01, 1e6), "3": number(0.01, 1e6) });
+var prices = object({ "1": number(0, 1e6), "2": number(0, 1e6), "3": number(0, 1e6) });
 var photo = (v) => typeof v === "string" && (v === "" || v.length <= 29e5 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v));
 var fields = {
+  referralSettings: { program: object({ enabled: choice(true, false), referrerAmount: number(0, 1e5), newClientAmount: number(0, 1e5), monthlyLimit: number(1, 1e3, true), validDays: number(1, 3650, true) }) },
+  referralCode: {},
+  attachReferral: { clientId: id, code: text(100, 1) },
   scheduleMode: { clientId: id, flexible: choice(true, false) },
   startDeadline: { packageId: id, date },
   standardPlan: { clientId: id, intensity: number(1, 3, true) },
-  individualPlan: { clientId: id, plan: object({ service, intensity: number(1, 7, true), cycleWeeks: number(1, 52, true), validWeeks: number(1, 104, true), price: optional(number(0.01, 1e6)) }) },
-  reviewPlan: { clientId: id, approve: choice(true, false), price: optional(number(0.01, 1e6)) },
+  individualPlan: { clientId: id, plan: object({ service, intensity: number(1, 7, true), cycleWeeks: number(1, 52, true), validWeeks: number(1, 104, true), price: optional(number(0, 1e6)) }) },
+  reviewPlan: { clientId: id, approve: choice(true, false), price: optional(number(0, 1e6)) },
   deleteLocation: { id },
   saveLocation: { id, name: text(200, 1), address: text(500) },
   sessionLocation: { id, locationId: id },
   clientProfile: { id, name: text(200, 1), phone: text(40), birthDate: date, answers: array(text(2e3), 20), photo: optional(photo) },
   updateProfile: { name: text(200, 1), email: text(254, 3), phone: text(40), photo },
   availability: { trainerId: id, days: array(day, 7), hours: array(hour, 24), weeklyHours: optional(object(Object.fromEntries(Array.from({ length: 7 }, (_, i) => [String(i), optional(array(hour, 24))])))) },
-  requestPayment: { id, code: optional(text(100)) },
+  requestPayment: { id, code: optional(text(100)), useWallet: optional(choice(true, false)) },
   confirmConsultation: { id },
   transferClient: { clientId: id, trainerId: id },
   deleteTrainer: { id },
@@ -1200,7 +1289,7 @@ var fields = {
   freeze: { packageId: id },
   block: { trainerId: id, date, hour, visibility: optional(choice("busy", "hidden")) },
   unblock: { id },
-  settings: { personal: number(0.01, 1e6), physio: number(0.01, 1e6), consultation: number(0.01, 1e6), cancelHours: number(1, 8760, true), rules: optional(rules2), packagePrices: optional(object({ personal: prices, physio: prices })) },
+  settings: { personal: number(0, 1e6), physio: number(0, 1e6), consultation: number(0, 1e6), cancelHours: number(1, 8760, true), rules: optional(rules2), packagePrices: optional(object({ personal: prices, physio: prices })) },
   rate: { trainerId: id, rate: number(0.01, 1e6) },
   productCopy: { service, copy: object({ color: optional((v) => typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v)), name: text(200, 1), subtitle: text(2e3, 1), bullets: array(text(1e3, 1), 20) }) },
   promotion: { promotion: object({ kind: choice("email", "code"), value: text(254, 1), percent: number(1, 100), maxUses: number(0, 1e6, true), expires: (v) => v === "" || date(v), active: choice(true, false) }) },
@@ -1230,29 +1319,49 @@ function applyCommand(source, userId, input, serverNow) {
   if (cmd.type === "payHold" && me.role !== "admin") throw Error("Op\u0142at\u0119 mo\u017Ce potwierdzi\u0107 wy\u0142\u0105cznie administrator.");
   db.accounts.sort((a, b) => Number(b.id === userId) - Number(a.id === userId));
   const actor = actorFor(me);
+  if (cmd.type === "referralCode" || cmd.type === "referralSettings" || cmd.type === "attachReferral") return referralCommand(db, actor, cmd);
   if (cmd.type === "requestPayment") {
     const hold = db.holds.find((h) => h.id === cmd.id && h.clientId === me.clientId && h.status === "active" && h.expires > db.now);
     if (me.role !== "client" || !hold) throw Error("Rezerwacja jest niedost\u0119pna.");
     if (hold.paymentRequest) return db;
     const pricing = quote(db, hold.clientId, hold.service, hold.intensity, cmd.code, hold.basePrice);
+    const wallet = reserveWallet(db, hold, pricing.total, !!cmd.useWallet);
+    pricing.total = Math.max(0, Math.round((pricing.total - wallet) * 100) / 100);
     hold.price = pricing.total;
     hold.paymentRequest = { code: cmd.code || "", at: db.now, pricing };
     hold.expires = new Date(Math.max(Date.parse(hold.expires), Date.parse(db.now) + (rules(db).paymentReviewHours || 72) * 36e5)).toISOString();
+    if (pricing.total === 0) {
+      const paid = execute(db, { ...actor, role: "admin" }, { type: "payHold", id: hold.id });
+      spendWallet(paid, paid.holds.find((h) => h.id === hold.id));
+      const p = paid.packages.at(-1);
+      p.walletSpent = wallet;
+      return paid;
+    }
     db.messages.unshift({ id: uid(), title: "Pro\u015Bba o rozliczenie pakietu", body: `${db.clients.find((c) => c.id === hold.clientId)?.name} \xB7 oczekuje na potwierdzenie wp\u0142aty.`, at: db.now, target: "admin", read: false });
     return db;
   }
   if (cmd.type === "confirmConsultation") {
     if (me.role !== "admin") throw Error("Op\u0142at\u0119 potwierdza administrator.");
     const session = db.sessions.find((s) => s.id === cmd.id && s.kind === "consultation");
-    if (!session || db.sales.some((s) => s.id === "consultation:" + session.id)) throw Error("Konsultacja zosta\u0142a ju\u017C rozliczona lub nie istnieje.");
+    if (!session || db.sales.some((s) => s.sessionId === session.id && s.status === "paid")) throw Error("Konsultacja zosta\u0142a ju\u017C rozliczona lub nie istnieje.");
     db.sales.push({ id: "consultation:" + session.id, sessionId: session.id, clientId: session.clientId, label: "Konsultacja", amount: session.consultationPrice ?? db.settings.consultation, date: db.now, status: "paid" });
     return db;
   }
   if (cmd.type === "payHold") cmd.code = cmd.code || db.holds.find((h) => h.id === cmd.id)?.paymentRequest?.code;
-  return managementTypes.includes(cmd.type) ? manage(db, actor, cmd) : execute(db, actor, cmd);
+  const next = managementTypes.includes(cmd.type) ? manage(db, actor, cmd) : execute(db, actor, cmd);
+  if (cmd.type === "payHold") {
+    const h = next.holds.find((h2) => h2.id === cmd.id);
+    spendWallet(next, h);
+    next.packages.at(-1).walletSpent = (h.walletAllocations || []).reduce((n, a) => n + a.amount, 0) / 100;
+  }
+  if (cmd.type === "outcome") {
+    const session = next.sessions.find((s) => s.id === cmd.id);
+    if (session) awardReferrals(next, session.clientId);
+  }
+  return next;
 }
 function parseRegistration(value) {
-  if (!object({ type: choice("register"), name: text(200, 1), email: text(254, 3), birthDate: date, phone: text(40, 1), trainerId: id, date, hour, answers: array(text(2e3), 20) })(value)) throw Error("Uzupe\u0142nij poprawnie formularz konsultacji.");
+  if (!object({ type: choice("register"), referralCode: optional(text(40)), name: text(200, 1), email: text(254, 3), birthDate: date, phone: text(40, 1), trainerId: id, date, hour, answers: array(text(2e3), 20) })(value)) throw Error("Uzupe\u0142nij poprawnie formularz konsultacji.");
   return structuredClone(value);
 }
 function parseTrainer(value) {
@@ -1260,6 +1369,10 @@ function parseTrainer(value) {
   return structuredClone(value);
 }
 function parseAdminClient(value) {
+  if (value && typeof value === "object" && !Array.isArray(value) && value.mode === "skip") {
+    const { date: date2, hour: hour2, ...rest } = value;
+    value = rest;
+  }
   if (!object({ name: text(200, 1), email: text(254, 3), phone: text(40, 1), birthDate: date, trainerId: id, answers: array(text(2e3), 20), mode: choice("consultation", "skip"), date: optional(date), hour: optional(hour), service: optional(service), intensity: optional(number(1, 3, true)) })(value)) throw Error("Sprawd\u017A dane klienta.");
   return structuredClone(value);
 }
@@ -1286,6 +1399,11 @@ function encodeRelational(db, baseline = sourceRows.get(db) || []) {
     const a = db.accounts.find((a2) => a2.id === id2);
     return a?.clientId || a?.trainerId || a?.id;
   };
+  const program = referralProgram(db);
+  add("aco_referral_program", { id: "company", enabled: program.enabled, referrer_amount: Math.round(program.referrerAmount * 100), new_client_amount: Math.round(program.newClientAmount * 100), monthly_limit: program.monthlyLimit, valid_days: program.validDays, revision: program.revision });
+  for (const c of db.referralCodes || []) add("aco_referral_codes", { id: c.id, client_id: c.clientId, code: c.code });
+  for (const r of db.referrals || []) add("aco_referrals", { id: r.id, client_id: r.clientId, referrer_id: r.referrerId, created_at: r.at, referrer_amount: r.referrerAmount, new_client_amount: r.newClientAmount, valid_days: r.validDays, status: r.status, resolved_at: r.resolvedAt || null, package_id: r.packageId || null });
+  for (const c of db.walletCredits || []) add("aco_wallet_credits", { id: c.id, client_id: c.clientId, referral_id: c.referralId, amount: c.amount, spent: c.spent, expires_at: c.expires, created_at: c.at });
   for (const a of db.accounts) {
     const c = db.clients.find((c2) => c2.id === a.clientId), t = db.trainers.find((t2) => t2.id === a.trainerId), pid = a.clientId || a.trainerId || a.id;
     add("aco_profiles", { id: pid, auth_user_id: a.id, name: c?.name || t?.name || a.name || "Administrator ACO!", email: a.email, phone: c?.phone || t?.phone || a.phone || "", avatar_path: c?.photo || t?.photo || a.photo || null, pending_email: a.pendingEmail || null, must_change_password: !!a.mustChangePassword });
@@ -1315,11 +1433,11 @@ function encodeRelational(db, baseline = sourceRows.get(db) || []) {
   add("aco_settings", { id: "company", ...settings });
   for (const p of db.promotions || []) add("aco_promotions", { id: p.id, kind: p.kind, value: p.value, percent: p.percent, max_uses: p.kind === "code" ? p.maxUses : null, used: p.used, expires_on: p.expires || null, active: p.active });
   for (const p of db.packages) {
-    add("aco_packages", { id: p.id, flexible: !!p.flexible, pending_start: !!p.pendingStart, start_deadline: p.startDeadline || null, client_id: p.clientId, product: p.service, intensity: p.intensity, count: p.count, starts_on: p.start, cycle_end: p.cycleEnd, valid_until: p.validUntil, protection_until: p.protectionUntil, price_grosz: money2(p.price), base_price_grosz: money2(p.basePrice ?? p.price), discount_percent: p.discountPercent || 0, promotion_id: p.promotionId || null, frozen: !!p.frozen });
+    add("aco_packages", { id: p.id, wallet_spent_grosz: money2(p.walletSpent || 0), flexible: !!p.flexible, pending_start: !!p.pendingStart, start_deadline: p.startDeadline || null, client_id: p.clientId, product: p.service, intensity: p.intensity, count: p.count, starts_on: p.start, cycle_end: p.cycleEnd, valid_until: p.validUntil, protection_until: p.protectionUntil, price_grosz: money2(p.price), base_price_grosz: money2(p.basePrice ?? p.price), discount_percent: p.discountPercent || 0, promotion_id: p.promotionId || null, frozen: !!p.frozen });
     for (const s of p.slots) add("aco_package_slots", { id: p.id + ":" + s.day + ":" + s.hour, package_id: p.id, weekday: s.day, hour: s.hour });
   }
   for (const h of db.holds) {
-    add("aco_holds", { id: h.id, flexible: !!h.flexible, base_price_grosz: money2(h.basePrice), holiday_override: !!h.holidayOverride, ignore_limits: !!h.ignoreLimits, client_id: h.clientId, trainer_id: h.trainerId, product_id: h.service, intensity: h.intensity, starts_on: h.start, expires_at: iso(h.expires), price_grosz: money2(h.price), status: h.status, kind: h.type, payment_requested_at: iso(h.paymentRequest?.at) || null, promotion_code: h.paymentRequest?.code ?? null, payment_quote: h.paymentRequest?.pricing ?? null });
+    add("aco_holds", { id: h.id, wallet_allocations: h.walletAllocations || [], flexible: !!h.flexible, base_price_grosz: money2(h.basePrice), holiday_override: !!h.holidayOverride, ignore_limits: !!h.ignoreLimits, client_id: h.clientId, trainer_id: h.trainerId, product_id: h.service, intensity: h.intensity, starts_on: h.start, expires_at: iso(h.expires), price_grosz: money2(h.price), status: h.status, kind: h.type, payment_requested_at: iso(h.paymentRequest?.at) || null, promotion_code: h.paymentRequest?.code ?? null, payment_quote: h.paymentRequest?.pricing ?? null });
     for (const d of h.dates) add("aco_hold_dates", { id: [h.id, d.date, d.hour].join(":"), hold_id: h.id, starts_at: starts(d.date, d.hour), original_starts_at: original(d.original) });
     for (const s of h.slots) add("aco_hold_slots", { id: h.id + ":" + s.day + ":" + s.hour, hold_id: h.id, weekday: s.day, hour: s.hour });
     add("aco_hold_terms", { id: h.id, hold_id: h.id, ...ruleData(h.terms || defaultRules) });
@@ -1351,6 +1469,11 @@ function decodeRelational(snapshot) {
   const accountId = (profileId) => accounts.find((a) => a.profile_id === profileId)?.id || profileId;
   const setting = get("aco_settings")[0] || {};
   const db = { version: 1, timeOffsetSeconds: snapshot.timeOffsetSeconds || 0, clockVersion: snapshot.clockVersion || 0, testToolsEnabled: !!snapshot.testToolsEnabled, now: new Date(snapshot.now).toISOString(), locations: get("aco_locations").map((l) => ({ id: l.id, name: l.name, address: l.address })), accounts: [], clients: [], trainers: [], sessions: [], packages: [], holds: [], messages: [], sales: [], substitutions: [], audit: [], blocks: [], letters: [], noticeReads: {}, promotions: [], extraHours: [], productCopies: {}, settings: { personal: (setting.personal_grosz ?? 18e3) / 100, physio: (setting.physio_grosz ?? 22e3) / 100, consultation: (setting.consultation_grosz ?? 25e3) / 100, cancelHours: setting.cancellation_hours ?? 24, rules: readRules(setting), packagePrices: { personal: {}, physio: {} } } };
+  const program = get("aco_referral_program")[0];
+  if (program) db.referralProgram = { enabled: program.enabled, referrerAmount: program.referrer_amount / 100, newClientAmount: program.new_client_amount / 100, monthlyLimit: program.monthly_limit, validDays: program.valid_days, revision: program.revision };
+  db.referralCodes = get("aco_referral_codes").map((c) => ({ id: c.id, clientId: c.client_id, code: c.code }));
+  db.referrals = get("aco_referrals").map((r) => ({ id: r.id, clientId: r.client_id, referrerId: r.referrer_id, at: iso(r.created_at), referrerAmount: r.referrer_amount, newClientAmount: r.new_client_amount, validDays: r.valid_days, status: r.status, resolvedAt: iso(r.resolved_at), packageId: r.package_id || void 0 }));
+  db.walletCredits = get("aco_wallet_credits").map((c) => ({ id: c.id, clientId: c.client_id, referralId: c.referral_id, amount: c.amount, spent: c.spent, expires: iso(c.expires_at), at: iso(c.created_at) }));
   for (const a of accounts) {
     const p = profile(a.profile_id);
     db.accounts.push({ id: a.id, email: p.email || "", pendingEmail: p.pending_email || void 0, name: p.name, phone: p.phone, photo: p.avatar_path || void 0, role: a.role, disabled: !a.enabled, mustChangePassword: !!p.must_change_password, ...a.role === "client" ? { clientId: a.profile_id } : a.role === "trainer" ? { trainerId: a.profile_id } : {} });
@@ -1372,8 +1495,8 @@ function decodeRelational(snapshot) {
   for (const p of get("aco_products")) db.productCopies[p.id] = { color: p.color, name: p.name, subtitle: p.subtitle, bullets: p.bullets };
   for (const p of get("aco_product_prices")) db.settings.packagePrices[p.product_id][p.intensity] = p.amount_grosz / 100;
   for (const p of get("aco_promotions")) db.promotions.push({ id: p.id, kind: p.kind, value: p.value, percent: Number(p.percent), maxUses: p.max_uses || 0, used: p.used, expires: p.expires_on || "", active: p.active });
-  for (const p of get("aco_packages")) db.packages.push({ id: p.id, flexible: !!p.flexible, pendingStart: !!p.pending_start, startDeadline: p.start_deadline || void 0, clientId: p.client_id, service: p.product, intensity: p.intensity, count: p.count, start: p.starts_on, cycleEnd: p.cycle_end, validUntil: p.valid_until, protectionUntil: p.protection_until, price: p.price_grosz / 100, basePrice: p.base_price_grosz / 100, discountPercent: Number(p.discount_percent), promotionId: p.promotion_id || void 0, frozen: p.frozen, slots: get("aco_package_slots").filter((s) => s.package_id === p.id).map((s) => ({ day: s.weekday, hour: s.hour })) });
-  for (const h of get("aco_holds")) db.holds.push({ id: h.id, flexible: !!h.flexible, basePrice: h.base_price_grosz == null ? void 0 : h.base_price_grosz / 100, holidayOverride: !!h.holiday_override, ignoreLimits: !!h.ignore_limits, clientId: h.client_id, trainerId: h.trainer_id, service: h.product_id, intensity: h.intensity, start: h.starts_on, expires: iso(h.expires_at), price: h.price_grosz / 100, status: h.status, type: h.kind, terms: readRules(get("aco_hold_terms").find((t) => t.hold_id === h.id) || {}), dates: get("aco_hold_dates").filter((d) => d.hold_id === h.id).map((d) => ({ date: wall(d.starts_at).slice(0, 10), hour: Number(wall(d.starts_at).slice(11, 13)), original: d.original_starts_at ? wall(d.original_starts_at) : void 0 })), slots: get("aco_hold_slots").filter((s) => s.hold_id === h.id).map((s) => ({ day: s.weekday, hour: s.hour })), paymentRequest: h.payment_requested_at ? { at: iso(h.payment_requested_at), code: h.promotion_code || "", pricing: h.payment_quote || void 0 } : void 0 });
+  for (const p of get("aco_packages")) db.packages.push({ id: p.id, walletSpent: (p.wallet_spent_grosz || 0) / 100, flexible: !!p.flexible, pendingStart: !!p.pending_start, startDeadline: p.start_deadline || void 0, clientId: p.client_id, service: p.product, intensity: p.intensity, count: p.count, start: p.starts_on, cycleEnd: p.cycle_end, validUntil: p.valid_until, protectionUntil: p.protection_until, price: p.price_grosz / 100, basePrice: p.base_price_grosz / 100, discountPercent: Number(p.discount_percent), promotionId: p.promotion_id || void 0, frozen: p.frozen, slots: get("aco_package_slots").filter((s) => s.package_id === p.id).map((s) => ({ day: s.weekday, hour: s.hour })) });
+  for (const h of get("aco_holds")) db.holds.push({ id: h.id, walletAllocations: h.wallet_allocations || [], flexible: !!h.flexible, basePrice: h.base_price_grosz == null ? void 0 : h.base_price_grosz / 100, holidayOverride: !!h.holiday_override, ignoreLimits: !!h.ignore_limits, clientId: h.client_id, trainerId: h.trainer_id, service: h.product_id, intensity: h.intensity, start: h.starts_on, expires: iso(h.expires_at), price: h.price_grosz / 100, status: h.status, type: h.kind, terms: readRules(get("aco_hold_terms").find((t) => t.hold_id === h.id) || {}), dates: get("aco_hold_dates").filter((d) => d.hold_id === h.id).map((d) => ({ date: wall(d.starts_at).slice(0, 10), hour: Number(wall(d.starts_at).slice(11, 13)), original: d.original_starts_at ? wall(d.original_starts_at) : void 0 })), slots: get("aco_hold_slots").filter((s) => s.hold_id === h.id).map((s) => ({ day: s.weekday, hour: s.hour })), paymentRequest: h.payment_requested_at ? { at: iso(h.payment_requested_at), code: h.promotion_code || "", pricing: h.payment_quote || void 0 } : void 0 });
   for (const s of get("aco_substitutions")) if (!s.revoked_at) db.substitutions.push({ id: s.id, clientId: s.client_id, trainerId: s.trainer_id, until: iso(s.expires_at) });
   for (const s of get("aco_sessions")) {
     const earning = get("aco_earnings").find((e) => e.session_id === s.id);
@@ -1413,7 +1536,7 @@ function relationalCommitArgs(before, after, actorId, action) {
   for (const r of [...delta.changes, ...delta.removed]) {
     const data = ("data" in r ? r.data : baseline.find((b) => b.table === r.table && b.key === r.key)?.data) || {};
     if (r.table === "aco_clients") clients.add(r.key);
-    if (data.client_id) clients.add(data.client_id);
+    if (data.client_id && !["aco_wallet_credits", "aco_referral_codes", "aco_referrals"].includes(r.table)) clients.add(data.client_id);
     if (r.table === "aco_trainers") trainers.add(r.key);
     if (data.trainer_id) trainers.add(data.trainer_id);
     if (data.package_id) {
@@ -1437,8 +1560,8 @@ function relationalCommitArgs(before, after, actorId, action) {
   }
   for (const db of [before, after]) for (const c of db.clients) if (clients.has(c.id) && c.trainerId) trainers.add(c.trainerId);
   const actor = before.accounts.find((a) => a.id === actorId), profile = actor?.clientId || actor?.trainerId || actorId;
-  const calendar = ["startDeadline", "adminClient", "individualPlan", "reviewPlan", "standardPlan", "register", "hold", "editHold", "payHold", "makeup", "reschedule", "outcome", "substitute", "transferClient", "block", "unblock", "freeze", "validity", "extend", "availability"].includes(action);
-  const dependencies = baseline.filter((r) => r.table === "aco_accounts" && r.key === actorId || r.table === "aco_profiles" && r.key === profile || r.table === "aco_clients" && clients.has(r.key) || r.table === "aco_trainers" && trainers.has(r.key) || calendar && ["aco_settings", "aco_product_prices", "aco_promotions"].includes(r.table)).map(({ table, key, version }) => ({ table, key, version }));
+  const calendar = ["startDeadline", "adminClient", "individualPlan", "reviewPlan", "standardPlan", "register", "hold", "editHold", "requestPayment", "payHold", "makeup", "reschedule", "outcome", "substitute", "transferClient", "block", "unblock", "freeze", "validity", "extend", "availability"].includes(action);
+  const dependencies = baseline.filter((r) => r.table === "aco_referral_program" || r.table === "aco_accounts" && r.key === actorId || r.table === "aco_profiles" && r.key === profile || r.table === "aco_clients" && clients.has(r.key) || r.table === "aco_trainers" && trainers.has(r.key) || calendar && ["aco_settings", "aco_product_prices", "aco_promotions"].includes(r.table)).map(({ table, key, version }) => ({ table, key, version }));
   return { p_clock_version: before.clockVersion || 0, p_changes: delta.changes, p_removed: delta.removed, p_dependencies: dependencies, p_clients: [...clients].sort(), p_trainers: [...trainers].sort(), p_role: actor?.role || "registration", p_action: action };
 }
 
@@ -1494,7 +1617,8 @@ async function publicAction(body, req, services) {
   if (command.date > dayAdd(dateOf(new Date(db.now)), rules(db).consultationDays) || !available(db, command.trainerId, command.date, command.hour) || !available(db, command.trainerId, command.date, command.hour + 1)) throw Error("Wybrany termin nie jest dost\u0119pny.");
   if (db.accounts.some((a) => a.email === email)) throw Error("Sprawd\u017A poprawno\u015B\u0107 danych. Je\u015Bli masz ju\u017C konto lub um\xF3wion\u0105 konsultacj\u0119, zaloguj si\u0119 albo skontaktuj si\u0119 z ACO!.");
   if (!await rpc("aco_rate_limit", { p_key: await hash2("registration-global"), p_max: 60, p_seconds: 3600 })) throw Error("Zbyt wiele rejestracji. Spr\xF3buj ponownie p\xF3\u017Aniej.");
-  await registerAccount(db, command);
+  const checked = await registerAccount(db, command);
+  attachReferral(checked.db, checked.db.clients.at(-1).id, command.referralCode || "");
   const registrationHash = await hash2(JSON.stringify(command));
   const recover = () => rpc("aco_registration_identity", { p_request: body.requestId, p_hash: registrationHash, p_email: email });
   let userId = await recover();
@@ -1516,10 +1640,15 @@ async function publicAction(body, req, services) {
         db = decodeRelational(snapshot);
       }
       const result = await registerAccount(db, command), next = result.db, client = next.clients.at(-1);
+      attachReferral(next, client.id, command.referralCode || "");
       const account = next.accounts.find((a) => a.clientId === client.id);
       account.id = userId;
       for (const session of next.sessions) if (session.clientId === client.id && session.kind === "consultation") session.consultationPrice = db.settings.consultation;
       next.sales = next.sales.filter((s) => s.clientId !== client.id);
+      if (db.settings.consultation === 0) {
+        const session = next.sessions.find((s) => s.clientId === client.id && s.kind === "consultation");
+        next.sales.push({ id: crypto.randomUUID(), sessionId: session.id, clientId: client.id, label: "Konsultacja bezp\u0142atna", amount: 0, date: db.now, status: "paid" });
+      }
       const delta = relationalCommitArgs(db, next, userId, "register");
       try {
         await rpc("aco_relational_commit", { p_actor: userId, p_session: null, p_request: body.requestId, p_hash: await hash2(JSON.stringify(command)), ...delta });
