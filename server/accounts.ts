@@ -1,3 +1,4 @@
+import {attachReferral} from '../src/referrals';
 import {registerAccount,addTrainer,validBirthDate,type Database} from '../src/auth';
 import {actorFor} from '../src/auth';
 import {execute,available,rules,dayAdd,dateOf} from '../src/domain';
@@ -55,7 +56,7 @@ export async function publicAction(body:any,req:Request,services:AccountServices
  if(db.accounts.some(a=>a.email===email))throw Error('Sprawdź poprawność danych. Jeśli masz już konto lub umówioną konsultację, zaloguj się albo skontaktuj się z ACO!.');
  if(!await rpc<boolean>('aco_rate_limit',{p_key:await hash('registration-global'),p_max:60,p_seconds:3600}))throw Error('Zbyt wiele rejestracji. Spróbuj ponownie później.');
  // Validate all scheduling rules before provisioning an Auth identity.
- await registerAccount(db,command);
+ const checked=await registerAccount(db,command);attachReferral(checked.db,checked.db.clients.at(-1)!.id,command.referralCode||'');
  const registrationHash=await hash(JSON.stringify(command));
  const recover=()=>rpc<string|null>('aco_registration_identity',{p_request:body.requestId,p_hash:registrationHash,p_email:email});
  let userId=await recover();
@@ -69,10 +70,12 @@ export async function publicAction(body:any,req:Request,services:AccountServices
   for(let attempt=0;attempt<3;attempt++){
    if(attempt){snapshot=await rpc<Snapshot>('aco_relational_public_load',{p_email:email});db=decode(snapshot)}
    const result=await registerAccount(db,command),next=result.db,client=next.clients.at(-1)!;
+   attachReferral(next,client.id,command.referralCode||'');
    const account=next.accounts.find(a=>a.clientId===client.id)!;account.id=userId;
    // Until a payment provider is integrated, registration never fabricates a paid sale.
    for(const session of next.sessions)if(session.clientId===client.id&&session.kind==='consultation')session.consultationPrice=db.settings.consultation;
    next.sales=next.sales.filter(s=>s.clientId!==client.id);
+   if(db.settings.consultation===0){const session=next.sessions.find(s=>s.clientId===client.id&&s.kind==='consultation')!;next.sales.push({id:crypto.randomUUID(),sessionId:session.id,clientId:client.id,label:'Konsultacja bezpłatna',amount:0,date:db.now,status:'paid'})}
    const delta=relationalCommitArgs(db,next,userId,'register');
    try{
     await rpc('aco_relational_commit',{p_actor:userId,p_session:null,p_request:body.requestId,p_hash:await hash(JSON.stringify(command)),...delta});
@@ -97,7 +100,7 @@ export async function trainerAction(db:Database,body:any,userId:string,services:
  if(old&&input.email.trim().toLowerCase()!==old.email)throw Error('Użyj osobnej opcji zmiany e-maila i loginu.');
  const next=await addTrainer(db,actorFor(me),input);
  const trainer=next.trainers.find(t=>t.id===(input.id||next.trainers.at(-1)!.id))!;
- const account=next.accounts.find(a=>a.trainerId===trainer.id)!;
+   const account=next.accounts.find(a=>a.trainerId===trainer.id)!;
  if(!old){
   const user=await services.auth('/admin/users','POST',{email:account.email,password:input.password,email_confirm:true});
   account.id=user.id;
